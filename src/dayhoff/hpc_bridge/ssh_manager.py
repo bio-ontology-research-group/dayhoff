@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Dict
 import paramiko  # TODO: Add to requirements
 from pathlib import Path
