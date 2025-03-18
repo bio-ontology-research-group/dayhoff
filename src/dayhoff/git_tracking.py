@@ -30,7 +30,8 @@ class GitTracker:
         )
         
         # Create a new branch for the event
-        branch_name = f"event/{event.timestamp.isoformat()}"
+        # Create branch name without invalid characters
+        branch_name = f"event/{event.timestamp.strftime('%Y-%m-%dT%H-%M-%S')}"
         self.repo.git.checkout('HEAD', b=branch_name)
         
         # TODO: Store event in a structured format
