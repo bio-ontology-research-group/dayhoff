@@ -1,5 +1,5 @@
 from dayhoff.llm import OpenAIClient, PromptManager, ResponseParser, ContextManager
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class MockOpenAIClient:
     """Mock OpenAI client for testing"""
