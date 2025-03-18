@@ -7,6 +7,9 @@ default_host = hpc.example.com
 ssh_key_dir = ~/.ssh
 known_hosts = ~/.ssh/known_hosts
 credential_system = dayhoff_hpc
+auth_method = key  # or 'password'
+ssh_key = id_rsa  # Name of private key file in ssh_key_dir
+username = your_username
 
 [LOGGING]
 file = ~/.config/dayhoff/dayhoff.log
