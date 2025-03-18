@@ -19,18 +19,38 @@ class SSHManager:
         self.connection: Optional[paramiko.SSHClient] = None
         self.ssh_config = config.get_ssh_config()
         
-    def connect(self, password: Optional[str] = None, key_path: Optional[str] = None) -> bool:
-        """Establish SSH connection using password or key-based authentication
+    def connect(self) -> bool:
+        """Establish SSH connection using configured authentication method
         
-        Args:
-            password: Password for authentication (optional if using key)
-            key_path: Path to SSH private key (optional if using password)
-            
         Returns:
             bool: True if connection was successful, False otherwise
         """
-        # TODO: Implement connection logic
-        return True
+        auth_method = config.get('HPC', 'auth_method', 'key')
+        
+        try:
+            self.connection = paramiko.SSHClient()
+            self.connection.load_system_host_keys()
+            self.connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            if auth_method == 'key':
+                key_file = Path(config.get('HPC', 'ssh_key_dir')) / config.get('HPC', 'ssh_key')
+                private_key = paramiko.RSAKey.from_private_key_file(str(key_file))
+                self.connection.connect(
+                    hostname=self.host,
+                    username=self.username,
+                    pkey=private_key
+                )
+            else:  # password auth
+                password = config.get('HPC', 'password')
+                self.connection.connect(
+                    hostname=self.host,
+                    username=self.username,
+                    password=password
+                )
+            return True
+        except Exception as e:
+            print(f"SSH connection failed: {str(e)}")
+            return False
         
     def execute_command(self, command: str) -> str:
         """Execute a command on the remote system
@@ -40,9 +60,21 @@ class SSHManager:
             
         Returns:
             str: Command output
+            
+        Raises:
+            RuntimeError: If no connection is established
         """
-        # TODO: Implement command execution
-        return f"Mock output for: {command}"
+        if not self.connection:
+            raise RuntimeError("SSH connection not established")
+            
+        stdin, stdout, stderr = self.connection.exec_command(command)
+        output = stdout.read().decode().strip()
+        error = stderr.read().decode().strip()
+        
+        if error:
+            output += f"\nError: {error}"
+            
+        return output
         
     def disconnect(self):
         """Close the SSH connection"""
