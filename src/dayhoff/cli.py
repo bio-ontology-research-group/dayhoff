@@ -13,7 +13,8 @@ class DayhoffCLI:
             '/explore': self.explore,
             '/workflow': self.generate_workflow,
             '/test': self.run_tests,
-            '/exit': self.exit_cli
+            '/exit': self.exit_cli,
+            '/quit': self.exit_cli  # Add /quit as alias
         }
         self.setup_autocomplete()
         self.test_commands = {
@@ -29,13 +30,24 @@ class DayhoffCLI:
     def setup_autocomplete(self):
         """Set up command autocompletion"""
         def completer(text: str, state: int) -> Optional[str]:
+            # Get matching commands
             options = [cmd for cmd in self.commands if cmd.startswith(text)]
+            
+            # Also autocomplete test names for /test command
+            if text.startswith('/test '):
+                test_part = text[6:]
+                options = [f'/test {test}' for test in self.test_commands 
+                         if test.startswith(test_part)]
+            
             if state < len(options):
                 return options[state]
             return None
             
         readline.parse_and_bind("tab: complete")
         readline.set_completer(completer)
+        
+        # Add command history
+        readline.set_history_length(100)
         
     def show_help(self, args: List[str]) -> None:
         """Show help information"""
@@ -136,9 +148,23 @@ def main(help: bool, test: Optional[str]):
     
     while True:
         try:
-            input_str = click.prompt("dayhoff>", prompt_suffix=" ")
-            cli.process_command(input_str)
-        except (KeyboardInterrupt, SystemExit):
+            try:
+                input_str = click.prompt("dayhoff>", prompt_suffix=" ")
+                cli.process_command(input_str)
+            except EOFError:  # Handle Ctrl+D
+                click.echo("\nGoodbye!")
+                break
+        except KeyboardInterrupt:
+            try:
+                # First Ctrl+C - show message
+                click.echo("\nPress Ctrl+C again to exit or type /exit to quit.")
+                input_str = click.prompt("dayhoff>", prompt_suffix=" ")
+                cli.process_command(input_str)
+            except KeyboardInterrupt:
+                # Second Ctrl+C - exit
+                click.echo("\nGoodbye!")
+                break
+        except SystemExit:
             click.echo("\nGoodbye!")
             break
         except Exception as e:
