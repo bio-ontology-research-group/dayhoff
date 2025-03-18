@@ -20,5 +20,11 @@ mode = local  # or 'remote'
 local_root = /home/leechuck/dayhoff_data  # Use absolute path
 remote_root = /home/leechuck/dayhoff_data  # Use absolute path
 
+[LLM]
+api_key = your_api_key_here
+model = gpt-4
+max_tokens = 4096
+rate_limit = 60
+
 [WORKFLOWS]
 default_workflow_type = cwl
