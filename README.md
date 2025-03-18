@@ -78,6 +78,49 @@ tracker.record_event(
 )
 ```
 
+## LLM Integration
+
+The LLM integration layer provides a unified interface for interacting with language models. Key features:
+
+- Support for multiple providers (OpenAI, Anthropic, etc.)
+- Prompt templating and management
+- Response parsing and validation
+- Context management for multi-turn interactions
+- Token usage tracking and budget management
+
+Example usage:
+
+```python
+from dayhoff.llm import OpenAIClient, PromptManager, ResponseParser
+
+# Initialize components
+client = OpenAIClient()
+prompt_manager = PromptManager()
+response_parser = ResponseParser()
+
+# Generate a prompt
+prompt = prompt_manager.generate_prompt('command', {'input': 'Analyze this data'})
+
+# Get response from LLM
+response = client.generate(prompt)
+
+# Parse and use the response
+parsed = response_parser.parse_response(response['response'])
+print(parsed['command'])
+```
+
+Configuration:
+
+Add to your `~/.config/dayhoff/dayhoff.cfg`:
+
+```ini
+[LLM]
+api_key = your_api_key
+model = gpt-4
+max_tokens = 4096
+rate_limit = 60
+```
+
 ## Usage
 
 ### CLI Interface
