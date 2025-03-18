@@ -16,9 +16,19 @@ class GitTracker:
     
     def __init__(self, repo_path: str = "."):
         """Initialize the tracker with a git repository path"""
-        self.repo = git.Repo(repo_path)
-        if self.repo.bare:
-            raise ValueError("Repository is bare - cannot track events")
+        # Create directory if it doesn't exist
+        os.makedirs(repo_path, exist_ok=True)
+        
+        # Initialize or open git repository
+        if not os.path.exists(os.path.join(repo_path, ".git")):
+            self.repo = git.Repo.init(repo_path)
+            # Create initial commit
+            with open(os.path.join(repo_path, "README.md"), "w") as f:
+                f.write("# Dayhoff Session\n\nThis repository tracks a Dayhoff session.\n")
+            self.repo.index.add(["README.md"])
+            self.repo.index.commit("Initial commit")
+        else:
+            self.repo = git.Repo(repo_path)
     
     def record_event(self, event_type: str, metadata: Dict[str, Any]) -> str:
         """Record a new event in the git history"""
