@@ -11,11 +11,13 @@ from .local import LocalFileSystem
 from .file_inspector import FileInspector
 from .streaming import FileStreamer
 from .stats import FileStats
+from .format_detector import FileFormatDetector
 
 __all__ = [
     'BaseFileSystem',
     'LocalFileSystem',
     'FileInspector',
     'FileStreamer',
-    'FileStats'
+    'FileStats',
+    'FileFormatDetector'
 ]
