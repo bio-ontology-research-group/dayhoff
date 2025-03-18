@@ -17,8 +17,9 @@ class GitTracker:
     
     def __init__(self, repo_path: str = "."):
         """Initialize the tracker with a git repository path"""
-        # Store the session path
+        # Store the session path and create a unique session ID
         self.session_path = repo_path
+        self.session_id = datetime.now().strftime("%Y%m%d%H%M%S")
         
         # Create directory if it doesn't exist
         os.makedirs(self.session_path, exist_ok=True)
@@ -50,7 +51,7 @@ class GitTracker:
         )
         
         # Create a new branch for the event
-        branch_name = f"event/{event.timestamp.strftime('%Y-%m-%dT%H-%M-%S')}"
+        branch_name = f"session_{self.session_id}/event/{event.timestamp.strftime('%Y-%m-%dT%H-%M-%S')}"
         self.repo.git.checkout('HEAD', b=branch_name)
         
         # Store event in a structured format
