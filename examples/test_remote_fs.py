@@ -4,7 +4,7 @@ import os
 
 # Common bioinformatics file extensions
 BIOINFO_EXTENSIONS = {
-    '.fasta':FASTA sequence',
+    '.fasta': 'FASTA sequence',
     '.fa': 'FASTA sequence',
     '.fastq': 'FASTQ sequence',
     '.fq': 'FASTQ sequence',
