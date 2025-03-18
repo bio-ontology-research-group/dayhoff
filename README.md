@@ -82,15 +82,27 @@ tracker.record_event(
 
 ### CLI Interface
 ```bash
-dayhoff explore /path/to/data
-dayhoff generate-workflow --workflow-type cwl
+# Install CLI
+pip install -e .
+
+# Run a command
+dayhoff execute test_command --param key=value
 ```
 
 ### Jupyter Notebook
-```python
-from dayhoff.notebook import DayhoffKernel
-kernel = DayhoffKernel()
+1. Install the kernel:
+```bash
+python -m dayhoff.notebook.kernel install --user
 ```
+
+2. Start Jupyter Notebook:
+```bash
+jupyter notebook
+```
+
+3. Select "Dayhoff" as the kernel when creating a new notebook
+
+4. Run commands directly in notebook cells
 
 ## Documentation
 
