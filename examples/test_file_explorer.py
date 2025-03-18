@@ -1,5 +1,6 @@
 from dayhoff.fs import FileInspector, LocalFileSystem
 from dayhoff.config import config
+import os
 
 def test_file_explorer():
     print("Testing file system exploration tools...\n")
@@ -8,12 +9,12 @@ def test_file_explorer():
     fs = LocalFileSystem()
     
     # Test file inspection
-    file_path = "sample.fasta"
+    file_path = os.path.join(os.path.dirname(__file__), "sample.fasta")
     inspector = FileInspector(fs)
     
     print("First 2 lines of file:")
     for line in inspector.head(file_path, 2):
-        print(line.strip())
+        print(line)
     
     # Test format detection
     file_type = fs.detect_format(file_path)
