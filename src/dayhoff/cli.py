@@ -28,26 +28,46 @@ class DayhoffCLI:
         }
         
     def setup_autocomplete(self):
-        """Set up command autocompletion"""
-        def completer(text: str, state: int) -> Optional[str]:
-            # Get matching commands
-            options = [cmd for cmd in self.commands if cmd.startswith(text)]
+        """Set up command autocompletion and history"""
+        # Initialize readline if available
+        try:
+            import readline
+            import rlcompleter
             
-            # Also autocomplete test names for /test command
-            if text.startswith('/test '):
-                test_part = text[6:]
-                options = [f'/test {test}' for test in self.test_commands 
-                         if test.startswith(test_part)]
+            # Set up tab completion
+            readline.parse_and_bind("tab: complete")
             
-            if state < len(options):
-                return options[state]
-            return None
+            # Set up command completion
+            def completer(text: str, state: int) -> Optional[str]:
+                # Get matching commands
+                options = [cmd for cmd in self.commands if cmd.startswith(text)]
+                
+                # Also autocomplete test names for /test command
+                if text.startswith('/test '):
+                    test_part = text[6:]
+                    options = [f'/test {test}' for test in self.test_commands 
+                             if test.startswith(test_part)]
+                
+                if state < len(options):
+                    return options[state]
+                return None
+                
+            readline.set_completer(completer)
             
-        readline.parse_and_bind("tab: complete")
-        readline.set_completer(completer)
-        
-        # Add command history
-        readline.set_history_length(100)
+            # Set up history
+            readline.set_history_length(100)
+            try:
+                readline.read_history_file(".dayhoff_history")
+            except FileNotFoundError:
+                pass
+                
+            # Save history on exit
+            import atexit
+            atexit.register(readline.write_history_file, ".dayhoff_history")
+            
+        except ImportError:
+            # Readline not available, skip advanced features
+            pass
         
     def show_help(self, args: List[str]) -> None:
         """Show help information"""
@@ -148,22 +168,27 @@ def main(help: bool, test: Optional[str]):
     
     while True:
         try:
+            # Set up readline for better input handling
             try:
-                input_str = click.prompt("dayhoff>", prompt_suffix=" ")
-                cli.process_command(input_str)
+                input_str = input("dayhoff> ")
             except EOFError:  # Handle Ctrl+D
                 click.echo("\nGoodbye!")
                 break
-        except KeyboardInterrupt:
-            try:
+            except KeyboardInterrupt:
                 # First Ctrl+C - show message
                 click.echo("\nPress Ctrl+C again to exit or type /exit to quit.")
-                input_str = click.prompt("dayhoff>", prompt_suffix=" ")
+                try:
+                    input_str = input("dayhoff> ")
+                except KeyboardInterrupt:
+                    # Second Ctrl+C - exit
+                    click.echo("\nGoodbye!")
+                    break
+                continue
+            
+            # Process the command
+            if input_str.strip():
                 cli.process_command(input_str)
-            except KeyboardInterrupt:
-                # Second Ctrl+C - exit
-                click.echo("\nGoodbye!")
-                break
+                
         except SystemExit:
             click.echo("\nGoodbye!")
             break
