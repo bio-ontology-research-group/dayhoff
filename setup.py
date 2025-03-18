@@ -6,7 +6,8 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     install_requires=[
-        # TODO: Add core dependencies
+        "gitpython>=3.1.0",
+        # TODO: Add other core dependencies
     ],
     extras_require={
         "hpc": ["paramiko"],

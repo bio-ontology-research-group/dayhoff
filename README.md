@@ -16,6 +16,22 @@ Dayhoff is a dual-interface (CLI/Jupyter) bioinformatics assistant system design
 pip install -e .
 ```
 
+## Core Features
+
+### Git Event Tracking
+Dayhoff includes a built-in git-based event tracking system that automatically records all significant actions in the system. This ensures full reproducibility of all analyses and workflows.
+
+Example usage:
+```python
+from dayhoff.git_tracking import GitTracker
+
+tracker = GitTracker()
+tracker.record_event(
+    event_type="analysis_started",
+    metadata={"analysis_type": "variant_calling"}
+)
+```
+
 ## Usage
 
 ### CLI Interface
