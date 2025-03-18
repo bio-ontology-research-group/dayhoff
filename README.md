@@ -18,6 +18,28 @@ pip install -e .
 
 ## Core Features
 
+### HPC Bridge
+
+The HPC Bridge component provides secure remote access to HPC systems with features for:
+
+- SSH connection management
+- Slurm job submission and monitoring
+- File synchronization between local and remote systems
+- Secure credential storage
+
+Example usage:
+```python
+from dayhoff.hpc_bridge import SSHManager, SlurmManager
+
+# Connect to HPC
+ssh = SSHManager("hpc.example.com", "username")
+ssh.connect(password="secure_password")
+
+# Submit job
+slurm = SlurmManager(ssh)
+job_id = slurm.submit_job("echo hello", {"time": "00:01:00"})
+```
+
 ### Git Event Tracking
 Dayhoff includes a built-in git-based event tracking system that automatically records all significant actions in the system. This ensures full reproducibility of all analyses and workflows.
 
