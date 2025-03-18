@@ -32,22 +32,16 @@ def explore_remote_fs():
     ls_output = ssh.execute_command("ls -l")
     print(ls_output)
     
-    # Identify bioinformatics files
-    print("\nIdentifying bioinformatics files:")
+    # Identify bioinformatics files by extension
+    print("\nIdentifying bioinformatics files by extension:")
     files = ssh.execute_command("ls").splitlines()
-    detector = FileFormatDetector(ssh)
     
     for file in files:
         _, ext = os.path.splitext(file)
         if ext.lower() in BIOINFO_EXTENSIONS:
             print(f"{file}: {BIOINFO_EXTENSIONS[ext.lower()]}")
         else:
-            # Try to detect format based on content
-            file_type = detector.detect(file)
-            if file_type:
-                print(f"{file}: Detected as {file_type}")
-            else:
-                print(f"{file}: Unknown format")
+            print(f"{file}: Unknown format (extension: {ext})")
     
     ssh.disconnect()
     print("\nRemote file system exploration completed successfully!")
