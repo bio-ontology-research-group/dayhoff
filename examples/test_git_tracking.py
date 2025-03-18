@@ -2,6 +2,23 @@ from dayhoff.git_tracking import GitTracker
 from pathlib import Path
 import shutil
 
+def generate_test_events(tracker, k: int):
+    """Generate k test events with incrementing metadata"""
+    for i in range(1, k + 1):
+        print(f"\nRecording test event {i}/{k}...")
+        tracker.record_event(
+            event_type=f"test_step_{i}",
+            metadata={
+                "test": "git_tracking",
+                "step": i,
+                "status": "running" if i < k else "completed"
+            },
+            files={
+                f"test_step_{i}.yaml": f"step: {i}\nstatus: running",
+                f"test_log_{i}.txt": f"Test step {i} of {k} completed"
+            }
+        )
+
 def main():
     # Create a temporary test directory
     test_path = Path("/tmp/dayhoff_test_git_tracking")
@@ -11,25 +28,9 @@ def main():
     print("Initializing Git tracking system...")
     tracker = GitTracker(str(test_path))
     
-    print("\nRecording first event with configuration...")
-    branch1 = tracker.record_event(
-        event_type="test_started",
-        metadata={"test": "git_tracking", "version": "1.0"},
-        files={
-            "test_config.yaml": "test: git_tracking\nversion: 1.0",
-            "test_script.py": "print('Hello from test script')"
-        }
-    )
-    
-    print("\nRecording second event with results...")
-    branch2 = tracker.record_event(
-        event_type="test_completed",
-        metadata={"status": "success", "assertions_passed": 5},
-        files={
-            "results.log": "Test results:\n- Assertion 1: PASS\n- Assertion 2: PASS",
-            "summary.json": '{"total_tests": 5, "passed": 5, "failed": 0}'
-        }
-    )
+    # Generate k events (default to 5 if not specified)
+    k = 5
+    generate_test_events(tracker, k)
     
     print("\nTest session details:")
     print(f"Location: {test_path}")
