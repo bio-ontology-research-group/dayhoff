@@ -6,9 +6,16 @@ This package provides functionality for:
 - Streaming access to large files
 - Statistics generation for common file types
 """
+from .base import BaseFileSystem
+from .local import LocalFileSystem
 from .file_inspector import FileInspector
-from .format_detector import FileFormatDetector
 from .streaming import FileStreamer
 from .stats import FileStats
 
-__all__ = ['FileInspector', 'FileFormatDetector', 'FileStreamer', 'FileStats']
+__all__ = [
+    'BaseFileSystem',
+    'LocalFileSystem',
+    'FileInspector',
+    'FileStreamer',
+    'FileStats'
+]

@@ -15,5 +15,10 @@ username = your_username
 file = ~/.config/dayhoff/dayhoff.log
 level = INFO
 
+[FILESYSTEM]
+mode = local  # or 'remote'
+local_root = ~/dayhoff_data
+remote_root = /home/username/dayhoff_data
+
 [WORKFLOWS]
 default_workflow_type = cwl
