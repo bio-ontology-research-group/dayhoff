@@ -14,6 +14,30 @@ Dayhoff is a dual-interface (CLI/Jupyter) bioinformatics assistant system design
 
 ```bash
 pip install -e .
+
+# Copy example config file to your home directory
+cp examples/dayhoff.cfg.example ~/.config/dayhoff/dayhoff.cfg
+```
+
+## Configuration
+
+Dayhoff uses a centralized configuration system stored in `~/.config/dayhoff/dayhoff.cfg`. The configuration file is divided into sections:
+
+- `[DEFAULT]`: General system settings
+- `[HPC]`: HPC connection settings
+- `[LOGGING]`: Logging configuration
+- `[WORKFLOWS]`: Workflow defaults
+
+You can modify the configuration file directly or use the Python API:
+
+```python
+from dayhoff.config import config
+
+# Get a config value
+log_level = config.get('LOGGING', 'level')
+
+# Set a config value
+config.set('HPC', 'default_host', 'new.hpc.example.com')
 ```
 
 ## Core Features

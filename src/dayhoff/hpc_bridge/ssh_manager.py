@@ -1,19 +1,22 @@
-from typing import Optional
+from typing import Optional, Dict
 import paramiko  # TODO: Add to requirements
+from pathlib import Path
+from ..config import config
 
 class SSHManager:
     """Manages SSH connections to remote HPC systems"""
     
-    def __init__(self, host: str, username: str):
+    def __init__(self, host: Optional[str] = None, username: Optional[str] = None):
         """Initialize SSH connection parameters
         
         Args:
-            host: Hostname or IP address of the remote system
-            username: Username for authentication
+            host: Hostname or IP address of the remote system (uses config default if None)
+            username: Username for authentication (uses system username if None)
         """
-        self.host = host
-        self.username = username
+        self.host = host or config.get('HPC', 'default_host')
+        self.username = username or os.getlogin()
         self.connection: Optional[paramiko.SSHClient] = None
+        self.ssh_config = config.get_ssh_config()
         
     def connect(self, password: Optional[str] = None, key_path: Optional[str] = None) -> bool:
         """Establish SSH connection using password or key-based authentication

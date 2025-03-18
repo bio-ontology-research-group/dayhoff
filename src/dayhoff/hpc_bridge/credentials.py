@@ -1,10 +1,12 @@
 import keyring  # TODO: Add to requirements
 from typing import Optional
+from ..config import config
 
 class CredentialManager:
     """Manages secure storage and retrieval of HPC credentials"""
     
-    def __init__(self, system_name: str = "dayhoff_hpc"):
+    def __init__(self, system_name: Optional[str] = None):
+        system_name = system_name or config.get('HPC', 'credential_system', 'dayhoff_hpc')
         """Initialize credential manager for a specific system
         
         Args:

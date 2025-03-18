@@ -1,0 +1,16 @@
+[DEFAULT]
+log_level = INFO
+data_dir = ~/dayhoff_data
+
+[HPC]
+default_host = hpc.example.com
+ssh_key_dir = ~/.ssh
+known_hosts = ~/.ssh/known_hosts
+credential_system = dayhoff_hpc
+
+[LOGGING]
+file = ~/.config/dayhoff/dayhoff.log
+level = INFO
+
+[WORKFLOWS]
+default_workflow_type = cwl
