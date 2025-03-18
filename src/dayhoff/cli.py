@@ -69,8 +69,20 @@ class DayhoffCLI:
             click.echo(f"Unknown command: {command}. Type /help for available commands.")
 
 @click.command()
-def main():
+@click.option('--help', is_flag=True, help="Show help message and exit")
+def main(help: bool):
     """Interactive Dayhoff CLI interface"""
+    if help:
+        click.echo("Dayhoff CLI - Bioinformatics Assistant")
+        click.echo("\nUsage:")
+        click.echo("  python src/dayhoff/cli.py [--help]")
+        click.echo("\nInteractive commands:")
+        click.echo("  /help       Show available commands")
+        click.echo("  /explore    Explore bioinformatics data")
+        click.echo("  /workflow   Generate bioinformatics workflows")
+        click.echo("  /exit       Exit the CLI")
+        return
+        
     cli = DayhoffCLI()
     click.echo("Welcome to Dayhoff CLI! Type /help for available commands.")
     
@@ -83,3 +95,6 @@ def main():
             break
         except Exception as e:
             click.echo(f"Error: {str(e)}")
+
+if __name__ == "__main__":
+    main()
