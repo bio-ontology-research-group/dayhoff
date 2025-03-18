@@ -4,3 +4,4 @@ Event(timestamp=datetime.datetime(2025, 3, 18, 18, 57, 43, 108400), event_type='
 Event(timestamp=datetime.datetime(2025, 3, 18, 19, 2, 13, 300409), event_type='test_event', metadata={'description': 'This is a test event'}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 3, 18, 21, 3, 34, 164072), event_type='test_event', metadata={'description': 'This is a test event'}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 3, 18, 21, 39, 45, 625948), event_type='command_executed', metadata={'command': 'test_command', 'params': {'key': 'value'}}, user='Robert Hoehndorf')
+Event(timestamp=datetime.datetime(2025, 3, 18, 21, 46, 23, 217812), event_type='command_executed', metadata={'command': 'test_command', 'params': {'key': 'value'}}, user='Robert Hoehndorf')
