@@ -17,8 +17,8 @@ level = INFO
 
 [FILESYSTEM]
 mode = local  # or 'remote'
-local_root = ~/dayhoff_data
-remote_root = /home/username/dayhoff_data
+local_root = /home/leechuck/dayhoff_data  # Use absolute path
+remote_root = /home/leechuck/dayhoff_data  # Use absolute path
 
 [WORKFLOWS]
 default_workflow_type = cwl

@@ -1,49 +1,44 @@
-import gzip
-import bz2
-import lzma
+import subprocess
 from pathlib import Path
 from typing import List, Iterator, Optional
 from .base import BaseFileSystem
 
 class LocalFileSystem(BaseFileSystem):
-    """Local filesystem implementation"""
+    """Local filesystem implementation using system commands"""
     
-    def _get_open_function(self, file_path: str):
-        """Determine the appropriate open function based on file extension"""
-        if file_path.endswith('.gz'):
-            return gzip.open
-        elif file_path.endswith('.bz2'):
-            return bz2.open
-        elif file_path.endswith('.xz'):
-            return lzma.open
-        return open
+    def _run_command(self, command: str) -> List[str]:
+        """Run a shell command and return output lines"""
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Command failed: {command}\n{result.stderr}")
+        return result.stdout.splitlines()
         
     def head(self, file_path: str, lines: int = 10) -> List[str]:
-        """Get the first n lines of a file"""
+        """Get the first n lines of a file using head command"""
         full_path = self.root / file_path
-        with self._get_open_function(str(full_path))(full_path, 'rt') as f:
-            return [next(f) for _ in range(lines)]
+        return self._run_command(f"head -n {lines} {full_path}")
         
     def tail(self, file_path: str, lines: int = 10) -> List[str]:
-        """Get the last n lines of a file"""
+        """Get the last n lines of a file using tail command"""
         full_path = self.root / file_path
-        with self._get_open_function(str(full_path))(full_path, 'rt') as f:
-            return list(f)[-lines:]
+        return self._run_command(f"tail -n {lines} {full_path}")
         
     def grep(self, file_path: str, pattern: str) -> List[str]:
-        """Search for a pattern in a file"""
-        import re
-        regex = re.compile(pattern)
+        """Search for a pattern in a file using grep command"""
         full_path = self.root / file_path
-        with self._get_open_function(str(full_path))(full_path, 'rt') as f:
-            return [line for line in f if regex.search(line)]
+        return self._run_command(f"grep '{pattern}' {full_path}")
         
     def stream(self, file_path: str) -> Iterator[str]:
-        """Stream lines from a file"""
+        """Stream lines from a file using cat command"""
         full_path = self.root / file_path
-        with self._get_open_function(str(full_path))(full_path, 'rt') as f:
-            for line in f:
-                yield line
+        process = subprocess.Popen(
+            f"cat {full_path}",
+            shell=True,
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        for line in process.stdout:
+            yield line.strip()
                 
     def get_stats(self, file_path: str) -> dict:
         """Get file statistics"""
