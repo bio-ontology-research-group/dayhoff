@@ -2,7 +2,7 @@ import git
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 @dataclass
 class Event:
@@ -31,8 +31,14 @@ class GitTracker:
         else:
             self.repo = git.Repo(repo_path)
     
-    def record_event(self, event_type: str, metadata: Dict[str, Any]) -> str:
-        """Record a new event in the git history"""
+    def record_event(self, event_type: str, metadata: Dict[str, Any], files: Optional[Dict[str, str]] = None) -> str:
+        """Record a new event in the git history
+        
+        Args:
+            event_type: Type of event being recorded
+            metadata: Dictionary of metadata about the event
+            files: Optional dictionary of filename to content for files to include in this event
+        """
         event = Event(
             timestamp=datetime.now(),
             event_type=event_type,
@@ -41,13 +47,21 @@ class GitTracker:
         )
         
         # Create a new branch for the event
-        # Create branch name without invalid characters
         branch_name = f"event/{event.timestamp.strftime('%Y-%m-%dT%H-%M-%S')}"
         self.repo.git.checkout('HEAD', b=branch_name)
         
-        # TODO: Store event in a structured format
-        with open("dayhoff_events.log", "a") as f:
+        # Store event in a structured format
+        event_file = os.path.join(self.session_path, "dayhoff_events.log")
+        with open(event_file, "a") as f:
             f.write(f"{event}\n")
+            
+        # Add any provided files to the repository
+        if files:
+            for filename, content in files.items():
+                file_path = os.path.join(self.session_path, filename)
+                with open(file_path, "w") as f:
+                    f.write(content)
+                self.repo.index.add([filename])
             
         self.repo.index.add(["dayhoff_events.log"])
         self.repo.index.commit(f"Dayhoff event: {event_type}")
