@@ -41,8 +41,9 @@ class GitTracker:
         self.repo.index.add(["dayhoff_events.log"])
         self.repo.index.commit(f"Dayhoff event: {event_type}")
         
-        # Return to main branch
-        self.repo.git.checkout('main')
+        # Return to default branch
+        default_branch = self.repo.active_branch.name
+        self.repo.git.checkout(default_branch)
         return branch_name
     
     def _get_current_user(self) -> str:
