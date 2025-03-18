@@ -32,26 +32,29 @@ class DayhoffCLI:
         # Initialize readline if available
         try:
             import readline
-            import rlcompleter
-            
-            # Set up tab completion
-            readline.parse_and_bind("tab: complete")
             
             # Set up command completion
             def completer(text: str, state: int) -> Optional[str]:
-                # Get matching commands
-                options = [cmd for cmd in self.commands if cmd.startswith(text)]
+                # Get all possible completions
+                options = []
                 
-                # Also autocomplete test names for /test command
+                # Complete main commands
+                if not text or text.startswith('/'):
+                    options = [cmd for cmd in self.commands if cmd.startswith(text)]
+                
+                # Complete test names after /test
                 if text.startswith('/test '):
                     test_part = text[6:]
                     options = [f'/test {test}' for test in self.test_commands 
                              if test.startswith(test_part)]
                 
+                # Return the current match
                 if state < len(options):
                     return options[state]
                 return None
                 
+            # Set up readline
+            readline.parse_and_bind("tab: complete")
             readline.set_completer(completer)
             
             # Set up history
