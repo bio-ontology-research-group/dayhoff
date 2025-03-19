@@ -78,11 +78,25 @@ outputs:
         print("Workflow output:")
         print(result.stdout)
         
-        if "Hello World" in result.stdout:
-            print("\nWorkflow test completed successfully!")
-            return True
-        else:
-            print("\nWorkflow test failed - unexpected output")
+        # The output is a JSON object with the file location
+        import json
+        try:
+            output = json.loads(result.stdout)
+            output_file = output['output']['path']
+            
+            # Read the actual output file
+            with open(output_file, 'r') as f:
+                content = f.read().strip()
+                print(f"Actual output content: {content}")
+                
+                if content == "Hello World":
+                    print("\nWorkflow test completed successfully!")
+                    return True
+                else:
+                    print("\nWorkflow test failed - unexpected output content")
+                    return False
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"\nWorkflow test failed - error parsing output: {str(e)}")
             return False
 
 if __name__ == "__main__":
