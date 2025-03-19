@@ -91,23 +91,35 @@ steps:
             f.write(input_yaml)
         
         
-        # Upload files to remote with verification
+        # Upload files to remote with detailed debugging
         files_to_upload = [echo_path, workflow_path, input_path]
         try:
-            if not file_sync.upload_files(
-                [str(f) for f in files_to_upload],
-                remote_tmp
-            ):
-                print("✗ File upload failed")
-                return False
+            print("\nAttempting to upload files...")
+            for f in files_to_upload:
+                print(f"Uploading {f.name}...")
+                # Use scp directly for more reliable transfer
+                scp_cmd = f"scp {f} {ssh.username}@{ssh.host}:{remote_tmp}/{f.name}"
+                result = subprocess.run(scp_cmd, shell=True, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    print(f"✗ Failed to upload {f.name}")
+                    print("SCP error output:")
+                    print(result.stderr)
+                    return False
+                print(f"✓ {f.name} uploaded successfully")
             
-            # Verify each file was uploaded
+            # Verify files were uploaded
+            print("\nVerifying uploaded files...")
             for f in files_to_upload:
                 remote_path = f"{remote_tmp}/{f.name}"
-                check_cmd = f"test -f {remote_path} && echo exists || echo missing"
+                # Check file exists and has content
+                check_cmd = f"test -s {remote_path} && echo exists || echo missing"
                 result = ssh.execute_command(check_cmd).strip()
                 if result != "exists":
-                    print(f"✗ File upload verification failed for {f.name}")
+                    print(f"✗ File verification failed for {f.name}")
+                    # Show remote directory contents for debugging
+                    print("Remote directory contents:")
+                    print(ssh.execute_command(f"ls -l {remote_tmp}"))
                     return False
             
             print("✓ Files uploaded and verified successfully")
