@@ -78,6 +78,75 @@ tracker.record_event(
 )
 ```
 
+## Workflow Generation
+
+Dayhoff supports generating workflows in both CWL and Nextflow formats. The workflow system includes:
+
+- Abstract workflow representation
+- CWL generator
+- Nextflow generator
+- Singularity container integration
+- Environment tracking for reproducibility
+
+Example usage:
+
+```python
+from dayhoff.workflows import Workflow, WorkflowStep, CWLGenerator, NextflowGenerator
+
+# Create workflow
+workflow = Workflow("my_workflow")
+
+# Add steps
+step1 = WorkflowStep(
+    name="qc",
+    tool="fastqc",
+    inputs={"input_file": "File"},
+    outputs={"output_html": "File"},
+    container="quay.io/biocontainers/fastqc:0.11.9--0",
+    requirements=[]
+)
+
+step2 = WorkflowStep(
+    name="report",
+    tool="multiqc",
+    inputs={"input_dir": "Directory"},
+    outputs={"report_html": "File"},
+    container="quay.io/biocontainers/multiqc:1.11--pyhdfd78af_0",
+    requirements=[]
+)
+
+workflow.add_step(step1)
+workflow.add_step(step2, depends_on=["qc"])
+
+# Generate CWL
+cwl_gen = CWLGenerator()
+cwl = cwl_gen.generate(workflow)
+print(cwl)
+
+# Generate Nextflow
+nf_gen = NextflowGenerator()
+nf = nf_gen.generate(workflow)
+print(nf)
+```
+
+### Container Integration
+
+Dayhoff integrates with Singularity containers for reproducible execution:
+
+```python
+from dayhoff.workflows import ContainerManager
+
+# Add container definition
+container_mgr = ContainerManager()
+container_mgr.add_container("fastqc", """
+Bootstrap: docker
+From: quay.io/biocontainers/fastqc:0.11.9--0
+""")
+
+# Build container
+container_mgr.build_container("fastqc")
+```
+
 ## LLM Integration
 
 The LLM integration layer provides a unified interface for interacting with language models. Key features:
