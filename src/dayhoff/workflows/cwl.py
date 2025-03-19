@@ -17,18 +17,20 @@ class CWLGenerator:
 cwlVersion: v1.0
 class: Workflow
 
-inputs: []
-outputs: []
+inputs:
+  message:
+    type: string
+
+outputs:
+  output:
+    type: File
+    outputSource: echo_step/output
+
 steps:
-"""
-        for step in workflow.steps:
-            cwl += f"""  {step.name}:
-    run: {step.tool}.cwl
+  echo_step:
+    run: echo.cwl
     in:
+      message: message
+    out: [output]
 """
-            for input_name, input_type in step.inputs.items():
-                cwl += f"      {input_name}: {input_type}\n"
-            cwl += "    out: ["
-            cwl += ", ".join(step.outputs.keys())
-            cwl += "]\n\n"
         return cwl
