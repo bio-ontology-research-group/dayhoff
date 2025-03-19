@@ -111,11 +111,11 @@ steps:
                     return False
             
             print("✓ Files uploaded and verified successfully")
-        
-        # Verify remote directory contents
-        print("\nRemote directory contents:")
-        ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
-        print(ls_output)
+            
+            # Verify remote directory contents
+            print("\nRemote directory contents:")
+            ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
+            print(ls_output)
         
         # Verify file sizes match
         print("\nVerifying file sizes:")
