@@ -91,25 +91,43 @@ steps:
             f.write(input_yaml)
         
         
-        # Upload files to remote
+        # Upload files to remote with verification
         files_to_upload = [echo_path, workflow_path, input_path]
-        if not file_sync.upload_files(
-            [str(f) for f in files_to_upload],
-            remote_tmp
-        ):
-            print("✗ File upload failed")
-            return False
-        print("✓ Files uploaded successfully")
+        try:
+            if not file_sync.upload_files(
+                [str(f) for f in files_to_upload],
+                remote_tmp
+            ):
+                print("✗ File upload failed")
+                return False
+            
+            # Verify each file was uploaded
+            for f in files_to_upload:
+                remote_path = f"{remote_tmp}/{f.name}"
+                check_cmd = f"test -f {remote_path} && echo exists || echo missing"
+                result = ssh.execute_command(check_cmd).strip()
+                if result != "exists":
+                    print(f"✗ File upload verification failed for {f.name}")
+                    return False
+            
+            print("✓ Files uploaded and verified successfully")
         
-        # Verify files exist remotely and show contents
-        print("Verifying remote files...")
+        # Verify remote directory contents
+        print("\nRemote directory contents:")
         ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
         print(ls_output)
         
-        # Show contents of each file
-        for fname in ["echo.cwl", "workflow.cwl", "inputs.yml"]:
-            print(f"\nContents of {fname}:")
-            print(ssh.execute_command(f"cat {remote_tmp}/{fname}"))
+        # Verify file sizes match
+        print("\nVerifying file sizes:")
+        for f in files_to_upload:
+            local_size = os.path.getsize(f)
+            remote_size = int(ssh.execute_command(f"stat -c%s {remote_tmp}/{f.name}").strip())
+            print(f"{f.name}: local={local_size} bytes, remote={remote_size} bytes")
+            if local_size != remote_size:
+                print(f"✗ Size mismatch for {f.name}")
+                return False
+        
+        print("✓ All file sizes match")
         
         # Execute workflow remotely with full paths
         print("Executing workflow remotely...")
