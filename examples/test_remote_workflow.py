@@ -82,9 +82,16 @@ outputs:
             return False
         print("✓ Files uploaded successfully")
         
-        # Execute workflow remotely
+        # Verify files exist remotely
+        print("Verifying remote files...")
+        ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
+        print(ls_output)
+        
+        # Execute workflow remotely with full paths
         print("Executing workflow remotely...")
-        cmd = f"cd {remote_tmp} && cwl-runner workflow.cwl inputs.yml"
+        remote_workflow = f"{remote_tmp}/workflow.cwl"
+        remote_inputs = f"{remote_tmp}/inputs.yml"
+        cmd = f"cwl-runner {remote_workflow} {remote_inputs}"
         result = ssh.execute_command(cmd)
         
         # Parse and verify output
