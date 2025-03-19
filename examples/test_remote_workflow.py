@@ -116,18 +116,22 @@ steps:
             print("\nRemote directory contents:")
             ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
             print(ls_output)
-        
-        # Verify file sizes match
-        print("\nVerifying file sizes:")
-        for f in files_to_upload:
-            local_size = os.path.getsize(f)
-            remote_size = int(ssh.execute_command(f"stat -c%s {remote_tmp}/{f.name}").strip())
-            print(f"{f.name}: local={local_size} bytes, remote={remote_size} bytes")
-            if local_size != remote_size:
-                print(f"✗ Size mismatch for {f.name}")
-                return False
-        
-        print("✓ All file sizes match")
+            
+            # Verify file sizes match
+            print("\nVerifying file sizes:")
+            for f in files_to_upload:
+                local_size = os.path.getsize(f)
+                remote_size = int(ssh.execute_command(f"stat -c%s {remote_tmp}/{f.name}").strip())
+                print(f"{f.name}: local={local_size} bytes, remote={remote_size} bytes")
+                if local_size != remote_size:
+                    print(f"✗ Size mismatch for {f.name}")
+                    return False
+            
+            print("✓ All file sizes match")
+            
+        except Exception as e:
+            print(f"✗ Error during file upload and verification: {str(e)}")
+            return False
         
         # Execute workflow remotely with full paths
         print("Executing workflow remotely...")
