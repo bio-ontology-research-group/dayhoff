@@ -54,6 +54,10 @@ outputs:
         )
         workflow.add_step(step)
         
+        # Create remote temp directory first
+        remote_tmp = ssh.execute_command("mktemp -d").strip()
+        print(f"Created remote temp directory: {remote_tmp}")
+
         # Generate workflow CWL with explicit paths
         cwl_gen = CWLGenerator()
         workflow_cwl = cwl_gen.generate(workflow)
@@ -86,9 +90,6 @@ steps:
         with open(input_path, "w") as f:
             f.write(input_yaml)
         
-        # Create remote temp directory
-        remote_tmp = ssh.execute_command("mktemp -d").strip()
-        print(f"Created remote temp directory: {remote_tmp}")
         
         # Upload files to remote
         files_to_upload = [echo_path, workflow_path, input_path]
