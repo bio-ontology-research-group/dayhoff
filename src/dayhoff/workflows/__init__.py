@@ -7,13 +7,13 @@ This package provides functionality for:
 - Singularity container specification
 - Environment tracking and reproducibility
 """
-from .base import Workflow
+from .base import Workflow, WorkflowStep
 from .cwl import CWLGenerator
 from .nextflow import NextflowGenerator
 from .containers import ContainerManager
 from .environment import EnvironmentTracker
 
 __all__ = [
-    'Workflow', 'CWLGenerator', 'NextflowGenerator',
+    'Workflow', 'WorkflowStep', 'CWLGenerator', 'NextflowGenerator',
     'ContainerManager', 'EnvironmentTracker'
 ]
