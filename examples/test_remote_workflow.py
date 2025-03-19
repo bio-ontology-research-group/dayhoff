@@ -54,10 +54,28 @@ outputs:
         )
         workflow.add_step(step)
         
-        # Generate workflow CWL
+        # Generate workflow CWL with explicit paths
         cwl_gen = CWLGenerator()
         workflow_cwl = cwl_gen.generate(workflow)
         workflow_path = Path(tmpdir) / "workflow.cwl"
+        
+        # Add explicit import of echo.cwl
+        workflow_cwl = f"""cwlVersion: v1.0
+class: Workflow
+inputs:
+  message: string
+outputs:
+  output:
+    type: File
+    outputSource: echo_step/output
+steps:
+  echo_step:
+    run: {remote_tmp}/echo.cwl
+    in:
+      message: message
+    out: [output]
+"""
+        
         with open(workflow_path, "w") as f:
             f.write(workflow_cwl)
         
@@ -82,10 +100,15 @@ outputs:
             return False
         print("✓ Files uploaded successfully")
         
-        # Verify files exist remotely
+        # Verify files exist remotely and show contents
         print("Verifying remote files...")
         ls_output = ssh.execute_command(f"ls -l {remote_tmp}")
         print(ls_output)
+        
+        # Show contents of each file
+        for fname in ["echo.cwl", "workflow.cwl", "inputs.yml"]:
+            print(f"\nContents of {fname}:")
+            print(ssh.execute_command(f"cat {remote_tmp}/{fname}"))
         
         # Execute workflow remotely with full paths
         print("Executing workflow remotely...")
