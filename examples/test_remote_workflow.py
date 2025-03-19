@@ -157,9 +157,17 @@ steps:
         print(result)
         
         try:
-            # The output is a JSON object with the file location
+            # Extract just the JSON portion from the output
             import json
-            output = json.loads(result)
+            import re
+            
+            # Find the JSON object in the output
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if not json_match:
+                print("✗ Failed to find JSON output in workflow results")
+                return False
+                
+            output = json.loads(json_match.group())
             output_file = output['output']['path']
             
             # Read the actual output file
@@ -172,7 +180,7 @@ steps:
             else:
                 print("\nRemote workflow test failed - unexpected output content")
                 return False
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError, AttributeError) as e:
             print(f"\nRemote workflow test failed - error parsing output: {str(e)}")
             return False
         finally:
