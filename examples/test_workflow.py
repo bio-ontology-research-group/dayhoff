@@ -1,46 +1,89 @@
+import os
+import tempfile
+import subprocess
+from pathlib import Path
 from dayhoff.workflows import Workflow, WorkflowStep, CWLGenerator, NextflowGenerator
 
 def test_workflow():
-    print("Testing workflow generation...\n")
+    print("Testing workflow generation and execution...\n")
     
-    # Create a simple workflow
-    workflow = Workflow("test_workflow")
-    
-    # Add steps
-    step1 = WorkflowStep(
-        name="step1",
-        tool="fastqc",
-        inputs={"input_file": "File"},
-        outputs={"output_html": "File"},
-        container="quay.io/biocontainers/fastqc:0.11.9--0",
-        requirements=[]
-    )
-    
-    step2 = WorkflowStep(
-        name="step2",
-        tool="multiqc",
-        inputs={"input_dir": "Directory"},
-        outputs={"report_html": "File"},
-        container="quay.io/biocontainers/multiqc:1.11--pyhdfd78af_0",
-        requirements=[]
-    )
-    
-    workflow.add_step(step1)
-    workflow.add_step(step2, depends_on=["step1"])
-    
-    # Generate CWL
-    cwl_gen = CWLGenerator()
-    cwl = cwl_gen.generate(workflow)
-    print("Generated CWL:")
-    print(cwl)
-    
-    # Generate Nextflow
-    nf_gen = NextflowGenerator()
-    nf = nf_gen.generate(workflow)
-    print("\nGenerated Nextflow:")
-    print(nf)
-    
-    print("\nWorkflow test completed successfully!")
+    # Create a temporary directory for the test
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a simple workflow
+        workflow = Workflow("test_workflow")
+        
+        # Create a simple echo tool CWL
+        echo_cwl = """#!/usr/bin/env cwl-runner
+cwlVersion: v1.0
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  message:
+    type: string
+    inputBinding:
+      position: 1
+outputs:
+  output:
+    type: stdout
+"""
+        
+        # Write the echo tool CWL
+        echo_path = Path(tmpdir) / "echo.cwl"
+        with open(echo_path, "w") as f:
+            f.write(echo_cwl)
+        
+        # Add a simple echo step
+        step = WorkflowStep(
+            name="echo_step",
+            tool=str(echo_path),
+            inputs={"message": "string"},
+            outputs={"output": "File"},
+            container="alpine:latest",
+            requirements=[]
+        )
+        workflow.add_step(step)
+        
+        # Generate CWL
+        cwl_gen = CWLGenerator()
+        workflow_cwl = cwl_gen.generate(workflow)
+        
+        # Write the workflow CWL
+        workflow_path = Path(tmpdir) / "workflow.cwl"
+        with open(workflow_path, "w") as f:
+            f.write(workflow_cwl)
+        
+        # Create input YAML
+        input_yaml = """message: "Hello World"
+"""
+        input_path = Path(tmpdir) / "inputs.yml"
+        with open(input_path, "w") as f:
+            f.write(input_yaml)
+        
+        # Run the workflow using cwl-runner
+        print("Executing workflow with cwl-runner...")
+        result = subprocess.run(
+            ["cwl-runner", str(workflow_path), str(input_path)],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print("Workflow execution failed!")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            return False
+        
+        # Verify output
+        print("Workflow output:")
+        print(result.stdout)
+        
+        if "Hello World" in result.stdout:
+            print("\nWorkflow test completed successfully!")
+            return True
+        else:
+            print("\nWorkflow test failed - unexpected output")
+            return False
 
 if __name__ == "__main__":
     test_workflow()
