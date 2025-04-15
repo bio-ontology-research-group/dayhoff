@@ -65,8 +65,8 @@ class DayhoffService:
         return {
             "help": {"handler": self._handle_help, "help": "Show help for commands. Usage: /help [command_name]"},
             # --- Test Command ---
-            # Renamed from test_command to test
-            "test": {"handler": self._handle_test, "help": "A simple test command. Usage: /test [--param key=value]"},
+            # Updated help text for /test
+            "test": {"handler": self._handle_test, "help": "Run or show information about internal tests. Usage: /test [test_name]"},
             # --- Config ---
             "config_get": {"handler": self._handle_config_get, "help": "Get a config value. Usage: /config_get <section> <key> [default_value]"},
             "config_ssh": {"handler": self._handle_config_ssh, "help": "Get SSH configuration. Usage: /config_ssh"},
@@ -129,7 +129,11 @@ class DayhoffService:
             except argparse.ArgumentError as e:
                  logger.warning(f"Argument error for /{command}: {e}")
                  # Provide specific usage help on argument error
-                 return f"Argument Error: {e}\nUsage: {command_info.get('help', 'No help available.')}"
+                 # Check if the error message already contains usage info from the parser
+                 if "usage:" in str(e).lower():
+                     return f"Argument Error: {e}"
+                 else:
+                     return f"Argument Error: {e}\nUsage: {command_info.get('help', 'No help available.')}"
             except FileNotFoundError as e: # Catch file not found specifically
                  logger.warning(f"File not found during /{command}: {e}")
                  return f"Error: File not found - {e}"
@@ -170,7 +174,11 @@ class DayhoffService:
                 cmd_name = cmd_name[1:]
             if cmd_name in self._command_map:
                 # Return the full help text for the specific command
-                return self._command_map[cmd_name]['help']
+                # If the command is 'test', call its handler without args to get detailed help
+                if cmd_name == 'test':
+                    return self._handle_test([]) # Call test handler with no args for help
+                else:
+                    return self._command_map[cmd_name]['help']
             else:
                 return f"Unknown command: /{cmd_name}"
 
@@ -182,35 +190,62 @@ class DayhoffService:
         # Override error handling to raise exception instead of exiting
         def error(message):
             # Include the command name in the error message for clarity
-            raise argparse.ArgumentError(None, f"Invalid arguments for /{prog}: {message}")
+            # Add usage string to the error message
+            usage = parser.format_usage()
+            full_message = f"Invalid arguments for /{prog}: {message}\n{usage}"
+            raise argparse.ArgumentError(None, full_message)
         parser.error = error
         return parser
 
     # --- Test Command Handler ---
-    # Renamed from _handle_test_command to _handle_test
     def _handle_test(self, args: List[str]) -> str:
-        """Handles the simple /test command."""
-        # Updated parser prog name
-        parser = self._create_parser("test", "A simple test command.")
-        # Example of accepting arbitrary key=value pairs
-        parser.add_argument('--param', action='append', help="Parameters in key=value format")
+        """Handles the /test command, providing info about available tests."""
+
+        available_tests = {
+            "cli": "Test non-interactive CLI execution (`dayhoff execute ...`).",
+            "config": "Test loading and printing the current configuration.",
+            "file_explorer": "Test local file head and format detection.",
+            "git_tracking": "Test GitTracker event recording and history retrieval.",
+            "hpc_bridge": "Test mock SSH/Slurm interactions.",
+            "llm_core": "Test mock LLM prompt/response/context flow.",
+            "remote_fs": "Test SSH connection and remote `ls` execution.",
+            "remote_workflow": "Test remote CWL workflow execution via SSH.",
+            "session_tracking": "Test GitTracker with simulated session events.",
+            "ssh_connection": "Test basic SSH connection and simple command execution.",
+            "workflow": "Test local CWL generation and execution.",
+            # Add more keys as needed, matching filenames or logical test groups
+        }
+
+        # If no arguments are provided, or if 'help' is passed, show available tests
+        if not args or (args and args[0] == 'help'):
+            help_lines = [
+                "Usage: /test [test_name]",
+                "\nRuns or shows information about a specific internal test.",
+                "If no test_name is provided, lists available tests.",
+                "\nAvailable tests:",
+            ]
+            for name, desc in sorted(available_tests.items()):
+                help_lines.append(f"  {name:<20} - {desc}")
+            return "\n".join(help_lines)
+
+        # Use argparse to parse the optional test_name
+        parser = self._create_parser("test", "Run or show information about internal tests.")
+        parser.add_argument("test_name", nargs='?', help="The name of the test to run or get info about.")
+        # Add back the --param example if needed, but it's less relevant now
+        # parser.add_argument('--param', action='append', help="Example parameter (key=value)")
         parsed_args = parser.parse_args(args)
 
-        params = {}
-        if parsed_args.param:
-            for p in parsed_args.param:
-                if '=' in p:
-                    key, value = p.split('=', 1)
-                    params[key] = value
-                else:
-                    # Handle case where value is not provided, maybe treat as flag or error
-                    params[p] = True # Or raise argparse.ArgumentError
+        test_name = parsed_args.test_name
 
-        # Construct the output message based on click test
-        # Updated output message to reflect command name
-        output = f"Executed /test command with params: {params}"
-        logger.info(f"Test command executed with params: {params}")
-        return output
+        if test_name in available_tests:
+            logger.info(f"Simulating execution of test: {test_name}")
+            # For now, just confirm which test would run.
+            # In the future, this could potentially trigger the actual test script.
+            return f"Executing test '{test_name}': {available_tests[test_name]}\n(Note: Actual execution not implemented in REPL yet)."
+        else:
+            # Raise error similar to how parser.error would, including usage
+            valid_names = ", ".join(sorted(available_tests.keys()))
+            raise argparse.ArgumentError(None, f"Unknown test_name '{test_name}'. Available tests are: {valid_names}\nUsage: /test [test_name]")
 
 
     # --- Config Handlers ---
