@@ -1,0 +1,19 @@
+# Core Dependencies
+gitpython>=3.1.0
+paramiko>=2.7.0
+
+# Optional Dependencies (install with pip install -r requirements.txt -r requirements-extra.txt or similar)
+# Consider splitting extras into separate files (e.g., requirements-ai.txt) if preferred
+
+# --- AI ---
+# transformers
+# langchain
+
+# --- Workflows ---
+# cwlgen
+# pynextflow
+
+# --- Development ---
+# pytest
+# flake8
+# black
