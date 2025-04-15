@@ -10,7 +10,10 @@ class DayhoffConfig:
     """Centralized configuration manager for Dayhoff system"""
 
     def __init__(self):
-        self.config = configparser.ConfigParser()
+        # Allow inline comments by specifying the comment prefix and inline_comment_prefixes
+        # Note: configparser by default uses '#' and ';' as comment prefixes for *whole lines*.
+        # Setting inline_comment_prefixes handles comments *after* values.
+        self.config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
         self.config_path = self._get_config_path()
 
         # Create default config if it doesn't exist
@@ -38,30 +41,61 @@ class DayhoffConfig:
 
     def _create_default_config(self):
         """Create default configuration file"""
-        self.config['DEFAULT'] = {
+        # Using RawConfigParser temporarily to write comments easily
+        # Note: This doesn't affect reading, as the main self.config handles inline comments
+        temp_config = configparser.RawConfigParser()
+
+        temp_config['DEFAULT'] = {
             'log_level': 'INFO',
             'data_dir': str(Path.home() / 'dayhoff_data')
         }
+        # Add comments for clarity in the default file
+        temp_config.set('DEFAULT', '# Default logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
+        temp_config.set('DEFAULT', '# Default directory for storing Dayhoff-related data')
 
-        self.config['HPC'] = {
-            'default_host': '', # Default to empty, user must fill in
-            'username': '',     # Default to empty
-            'auth_method': 'key', # Default to key-based auth
-            'ssh_key_dir': str(Path.home() / '.ssh'),
-            'ssh_key': 'id_rsa', # Default private key name
-            'known_hosts': str(Path.home() / '.ssh' / 'known_hosts'),
-            'remote_root': '.', # Default remote directory
-            'credential_system': 'dayhoff_hpc' # Default service name for keyring
+
+        temp_config['HPC'] = {
+            'default_host': '',     # Hostname or IP address of the HPC login node
+            'username': '',         # Your username on the HPC
+            'auth_method': 'key',   # Authentication method: 'key' or 'password'
+            'ssh_key_dir': str(Path.home() / '.ssh'), # Directory containing SSH keys
+            'ssh_key': 'id_rsa',    # Name of private key file in ssh_key_dir
+            'known_hosts': str(Path.home() / '.ssh' / 'known_hosts'), # Path to known_hosts file
+            'remote_root': '.',     # Default remote directory after login
+            'credential_system': 'dayhoff_hpc' # Base service name for keyring storage
         }
+        # Add comments for HPC section
+        temp_config.set('HPC', '# --- HPC Connection Settings ---')
+        temp_config.set('HPC', '# Hostname or IP address of the HPC login node')
+        temp_config.set('HPC', '# Your username on the HPC')
+        temp_config.set('HPC', '# Authentication method: \'key\' (recommended) or \'password\'')
+        temp_config.set('HPC', '# Directory containing SSH keys (if auth_method is \'key\')')
+        temp_config.set('HPC', '# Name of private key file in ssh_key_dir (e.g., id_rsa, id_ed25519)')
+        temp_config.set('HPC', '# Path to your SSH known_hosts file (for host key verification)')
+        temp_config.set('HPC', '# Default remote directory to change into after login (e.g., /scratch/user)')
+        temp_config.set('HPC', '# Base service name used for storing/retrieving passwords via keyring')
+
 
         # Add other sections if needed
-        # self.config['LLM'] = { ... }
+        # temp_config['LLM'] = { ... }
 
-        self.save_config()
-        logger.info(f"Default configuration file created at {self.config_path}")
+        # Write the config with comments
+        try:
+            with open(self.config_path, 'w') as configfile:
+                temp_config.write(configfile)
+            logger.info(f"Default configuration file created at {self.config_path}")
+        except IOError as e:
+            logger.error(f"Failed to create default configuration file {self.config_path}: {e}")
+
+        # Now, re-initialize the main config parser to read the file correctly
+        self.config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+        self.config.read(self.config_path)
+
 
     def save_config(self):
         """Save the current configuration to file"""
+        # Note: Saving with configparser might strip comments depending on version/settings.
+        # If preserving comments on save is critical, more complex handling is needed.
         try:
             with open(self.config_path, 'w') as configfile:
                 self.config.write(configfile)
@@ -70,9 +104,20 @@ class DayhoffConfig:
             logger.error(f"Failed to save configuration file {self.config_path}: {e}")
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        """Get a configuration value"""
+        """Get a configuration value, stripping inline comments."""
         # Use fallback mechanism for keys potentially in DEFAULT
+        # configparser with inline_comment_prefixes handles this automatically now.
         value = self.config.get(section, key, fallback=default)
+
+        # # Manual stripping (no longer needed if inline_comment_prefixes works)
+        # if isinstance(value, str):
+        #     # Split at the first comment character and take the part before it
+        #     comment_chars = ('#', ';') # Add others if needed
+        #     for char in comment_chars:
+        #         if char in value:
+        #             value = value.split(char, 1)[0]
+        #     value = value.strip() # Remove leading/trailing whitespace
+
         logger.debug(f"Config get [{section}].{key}: returning '{value}'")
         return value
 
@@ -84,6 +129,8 @@ class DayhoffConfig:
         str_value = str(value)
         self.config[section][key] = str_value
         logger.info(f"Config set [{section}].{key} = {str_value}")
+        # Consider if saving immediately after every set is desired,
+        # or if an explicit save command is better. Saving now.
         self.save_config()
 
     def get_ssh_config(self) -> Dict[str, str]:
@@ -93,7 +140,10 @@ class DayhoffConfig:
         if section_name in self.config:
             try:
                 hpc_section = self.config[section_name]
-                for key, value in hpc_section.items():
+                # Iterate through keys available in the section
+                for key in hpc_section:
+                    # Use the 'get' method to ensure comments are stripped
+                    value = self.get(section_name, key)
                     # Rename default_host to host for SSHManager compatibility
                     if key == 'default_host':
                         ssh_settings['host'] = value
@@ -111,12 +161,12 @@ class DayhoffConfig:
 
         # Expand ~ in paths for convenience
         for key in ['ssh_key_dir', 'known_hosts', 'ssh_key']:
-            if key in ssh_settings and ssh_settings[key].startswith('~'):
+            if key in ssh_settings and isinstance(ssh_settings[key], str) and ssh_settings[key].startswith('~'):
                 ssh_settings[key] = os.path.expanduser(ssh_settings[key])
                 logger.debug(f"Expanded path for {key}: {ssh_settings[key]}")
 
         # Construct full path for ssh_key if ssh_key_dir is present
-        if 'ssh_key_dir' in ssh_settings and 'ssh_key' in ssh_settings and not os.path.isabs(ssh_settings['ssh_key']):
+        if 'ssh_key_dir' in ssh_settings and 'ssh_key' in ssh_settings and isinstance(ssh_settings['ssh_key'], str) and not os.path.isabs(ssh_settings['ssh_key']):
              full_key_path = os.path.join(ssh_settings['ssh_key_dir'], ssh_settings['ssh_key'])
              # Only update if the constructed path exists, otherwise keep original value
              # This allows specifying an absolute path directly in ssh_key
@@ -124,12 +174,11 @@ class DayhoffConfig:
                  ssh_settings['ssh_key'] = full_key_path
                  logger.debug(f"Constructed full path for ssh_key: {ssh_settings['ssh_key']}")
              else:
-                 logger.warning(f"Constructed SSH key path does not exist: {full_key_path}. Using original value: {ssh_settings['ssh_key']}")
+                 # Log clearly if the constructed path doesn't exist
+                 logger.warning(f"Constructed SSH key path does not exist: '{full_key_path}'. Using original value: '{ssh_settings['ssh_key']}'")
 
 
         return ssh_settings
 
 # Global config instance (consider if this is truly needed or if instances should be passed)
-config = DayhoffConfig()
-# Commenting out global instance for now - better to instantiate where needed
-# to ensure latest config is loaded if file changes during runtime.
+# config = DayhoffConfig() # Keep commented out - instantiate where needed
