@@ -30,7 +30,8 @@ from .llm.budget import TokenBudget
 from .llm.context import ContextManager
 
 # --- Workflows & Environment ---
-from .workflows import WorkflowGenerator
+# Corrected import: Import WorkflowGenerator from the workflow_generator module
+from .workflow_generator import WorkflowGenerator
 from .workflows.environment import EnvironmentTracker
 # from .modules import ModuleManager # If needed for a /module command
 
@@ -553,6 +554,9 @@ class DayhoffService:
             #     return f"Generated CWL workflow saved to: {output_path}"
             # else:
             # Decide how to output: print to console or save to file? Print for now.
+            # Check if the generator actually returned something (it might be a placeholder)
+            if cwl_output is None:
+                return "CWL generation is not yet implemented."
             return f"Generated CWL Workflow:\n---\n{cwl_output}\n---"
         except json.JSONDecodeError as e:
             return f"Invalid JSON provided for steps: {e}"
@@ -584,6 +588,9 @@ class DayhoffService:
             #     logger.info(f"Nextflow script saved to {output_path}")
             #     return f"Generated Nextflow script saved to: {output_path}"
             # else:
+            # Check if the generator actually returned something (it might be a placeholder)
+            if nf_output is None:
+                return "Nextflow generation is not yet implemented."
             return f"Generated Nextflow Workflow:\n---\n{nf_output}\n---"
         except json.JSONDecodeError as e:
             return f"Invalid JSON provided for steps: {e}"
@@ -608,4 +615,3 @@ class DayhoffService:
         except Exception as e:
             logger.error("Error getting environment details", exc_info=True)
             return f"Error getting environment details: {e}"
-
