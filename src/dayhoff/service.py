@@ -3,6 +3,8 @@ import shlex
 from typing import Any, List, Dict, Optional
 import logging # Added logging
 import os # Added os import
+import subprocess # Added for running test scripts
+import sys # Added for getting python executable
 
 # --- Core Components ---
 from .config import DayhoffConfig
@@ -113,14 +115,16 @@ class DayhoffService:
             try:
                 # Record the event before execution
                 # Consider adding more context like current working directory?
-                self.tracker.record_event(
-                    event_type="command_executed",
-                    metadata={
-                        "command": command,
-                        "args": args # Log raw args
-                    }
-                    # Files might be implicitly tracked by handlers if needed
-                )
+                # Skip recording for /test command itself?
+                if command != 'test':
+                    self.tracker.record_event(
+                        event_type="command_executed",
+                        metadata={
+                            "command": command,
+                            "args": args # Log raw args
+                        }
+                        # Files might be implicitly tracked by handlers if needed
+                    )
                 # Execute the command handler
                 result = handler(args)
                 logger.info(f"Command /{command} executed successfully.")
@@ -140,15 +144,17 @@ class DayhoffService:
             except Exception as e:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True)
                 # Log the exception details?
-                self.tracker.record_event(
-                    event_type="command_failed",
-                    metadata={
-                        "command": command,
-                        "args": args,
-                        "error": str(e),
-                        "error_type": type(e).__name__
-                    }
-                )
+                # Skip recording failure for /test command itself?
+                if command != 'test':
+                    self.tracker.record_event(
+                        event_type="command_failed",
+                        metadata={
+                            "command": command,
+                            "args": args,
+                            "error": str(e),
+                            "error_type": type(e).__name__
+                        }
+                    )
                 # Return a user-friendly error message
                 return f"Error: {type(e).__name__}: {e}"
         else:
@@ -199,7 +205,10 @@ class DayhoffService:
 
     # --- Test Command Handler ---
     def _handle_test(self, args: List[str]) -> str:
-        """Handles the /test command, providing info about available tests."""
+        """Handles the /test command, running tests from the examples directory."""
+
+        # Assume 'examples' is relative to the CWD where the REPL is started
+        examples_dir = "examples"
 
         available_tests = {
             "cli": "Test non-interactive CLI execution (`dayhoff execute ...`).",
@@ -220,28 +229,67 @@ class DayhoffService:
         if not args or (args and args[0] == 'help'):
             help_lines = [
                 "Usage: /test [test_name]",
-                "\nRuns or shows information about a specific internal test.",
+                "\nRuns a specific test script from the 'examples/' directory.",
                 "If no test_name is provided, lists available tests.",
                 "\nAvailable tests:",
             ]
             for name, desc in sorted(available_tests.items()):
-                help_lines.append(f"  {name:<20} - {desc}")
+                script_path = os.path.join(examples_dir, f"test_{name}.py")
+                exists_marker = "[exists]" if os.path.isfile(script_path) else "[missing]"
+                help_lines.append(f"  {name:<20} - {desc} {exists_marker}")
             return "\n".join(help_lines)
 
         # Use argparse to parse the optional test_name
-        parser = self._create_parser("test", "Run or show information about internal tests.")
-        parser.add_argument("test_name", nargs='?', help="The name of the test to run or get info about.")
-        # Add back the --param example if needed, but it's less relevant now
-        # parser.add_argument('--param', action='append', help="Example parameter (key=value)")
+        parser = self._create_parser("test", "Run a specific test from the examples/ directory.")
+        parser.add_argument("test_name", nargs='?', help="The name of the test to run.")
         parsed_args = parser.parse_args(args)
 
         test_name = parsed_args.test_name
 
         if test_name in available_tests:
-            logger.info(f"Simulating execution of test: {test_name}")
-            # For now, just confirm which test would run.
-            # In the future, this could potentially trigger the actual test script.
-            return f"Executing test '{test_name}': {available_tests[test_name]}\n(Note: Actual execution not implemented in REPL yet)."
+            script_name = f"test_{test_name}.py"
+            script_path = os.path.join(examples_dir, script_name)
+            logger.info(f"Attempting to execute test script: {script_path}")
+
+            if not os.path.isfile(script_path):
+                logger.error(f"Test script not found: {script_path}")
+                raise FileNotFoundError(f"Test script '{script_path}' not found.")
+
+            try:
+                # Execute the script using the same Python interpreter that's running Dayhoff
+                process = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    check=False, # Don't raise exception on non-zero exit, handle manually
+                    timeout=120 # Add a timeout (e.g., 2 minutes)
+                )
+
+                # Format the output
+                output_lines = [
+                    f"--- Running Test: {test_name} ({script_path}) ---",
+                    f"Exit Code: {process.returncode}",
+                    "\n--- STDOUT ---",
+                    process.stdout.strip(),
+                    "\n--- STDERR ---",
+                    process.stderr.strip(),
+                    "\n--------------"
+                ]
+                result_message = "\n".join(output_lines)
+                if process.returncode == 0:
+                    logger.info(f"Test script '{script_path}' executed successfully.")
+                else:
+                    logger.warning(f"Test script '{script_path}' finished with exit code {process.returncode}.")
+
+                return result_message
+
+            except subprocess.TimeoutExpired:
+                 logger.error(f"Test script '{script_path}' timed out.")
+                 return f"Error: Test script '{script_path}' timed out after 120 seconds."
+            except Exception as e:
+                logger.error(f"Failed to execute test script '{script_path}': {e}", exc_info=True)
+                # Raise the exception to be caught by the main execute_command handler
+                raise e
         else:
             # Raise error similar to how parser.error would, including usage
             valid_names = ", ".join(sorted(available_tests.keys()))
