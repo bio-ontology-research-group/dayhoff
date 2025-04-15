@@ -45,7 +45,16 @@ def explore_remote_fs() -> bool:
     try:
         logger.info("Loading Dayhoff configuration...")
         config = DayhoffConfig()
+        # --- Add Debugging ---
+        config_path = config._get_config_path() # Get the path being used
+        logger.info(f"DayhoffConfig using configuration file: {config_path}")
+        # --- End Debugging ---
+
         ssh_config = config.get_ssh_config()
+        # --- Add Debugging ---
+        logger.info(f"Value returned by config.get_ssh_config(): {ssh_config}")
+        # --- End Debugging ---
+
         if not ssh_config or not ssh_config.get('host'):
             logger.error("✗ SSH configuration missing or incomplete in Dayhoff config.")
             print("Error: SSH host not configured. Please set up [HPC] section in your Dayhoff config.")
