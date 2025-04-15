@@ -36,3 +36,4 @@ Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 26, 9188), event_type='co
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 32, 949436), event_type='command_executed', metadata={'command': 'help', 'args': []}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 51, 979239), event_type='command_executed', metadata={'command': 'hpc_ssh_cmd', 'args': ['ls']}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 52, 10239), event_type='command_failed', metadata={'command': 'hpc_ssh_cmd', 'args': ['ls'], 'error': 'Error executing SSH command: SSH connection not established or active.', 'error_type': 'RuntimeError'}, user='Robert Hoehndorf')
+Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 59, 518087), event_type='command_executed', metadata={'command': 'help', 'args': []}, user='Robert Hoehndorf')
