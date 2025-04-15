@@ -3,6 +3,8 @@ import logging
 from typing import Optional, Dict
 import paramiko
 from pathlib import Path
+import socket # Moved import to the top
+
 # Removed incorrect import: from ..config import config
 
 logger = logging.getLogger(__name__)
@@ -35,8 +37,15 @@ class SSHManager:
         self.port: int = int(ssh_config.get('port', 22)) # Default SSH port is 22
 
         # Authentication details
-        self.auth_method: str = ssh_config.get('auth_method', 'key').lower()
+        raw_auth_method: str = ssh_config.get('auth_method', 'key')
+        # Clean the auth_method string: remove comments and strip whitespace
+        self.auth_method: str = raw_auth_method.split('#')[0].strip().lower()
+
         self.key_file: Optional[str] = ssh_config.get('ssh_key') # Path should be resolved by config loader
+        # Clean the key_file string if it exists
+        if self.key_file:
+            self.key_file = self.key_file.split('#')[0].strip()
+
         self.password: Optional[str] = ssh_config.get('password') # Password should ideally be handled securely
 
         # Host key checking
@@ -44,7 +53,7 @@ class SSHManager:
 
         logger.debug(f"SSHManager initialized for host={self.host}, user={self.username}, port={self.port}, auth={self.auth_method}")
         if self.auth_method == 'key' and not self.key_file:
-             logger.warning("SSH auth method is 'key', but 'ssh_key' path is missing in config.")
+             logger.warning("SSH auth method is 'key', but 'ssh_key' path is missing or empty after cleaning in config.")
         elif self.auth_method == 'password' and not self.password:
              logger.warning("SSH auth method is 'password', but 'password' is missing in config.")
 
@@ -85,8 +94,11 @@ class SSHManager:
             }
 
             if self.auth_method == 'key':
-                if not self.key_file or not os.path.exists(self.key_file):
-                    logger.error(f"SSH key file not found or not specified: {self.key_file}")
+                if not self.key_file:
+                    logger.error("SSH key file path is missing or empty in config.")
+                    return False
+                if not os.path.exists(self.key_file):
+                    logger.error(f"SSH key file not found: {self.key_file}")
                     return False
                 try:
                     # Attempt to load key (supports various formats)
@@ -117,7 +129,8 @@ class SSHManager:
                 connect_args['allow_agent'] = False # Don't use SSH agent if using password
 
             else:
-                logger.error(f"Unsupported authentication method: {self.auth_method}")
+                # Log the *cleaned* auth method here
+                logger.error(f"Unsupported authentication method: '{self.auth_method}'")
                 return False
 
             self.connection.connect(**connect_args)
@@ -227,6 +240,3 @@ class SSHManager:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit context manager, close connection."""
         self.disconnect()
-
-# Need to import socket for timeout exception handling
-import socket
