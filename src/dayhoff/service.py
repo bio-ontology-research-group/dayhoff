@@ -16,7 +16,8 @@ from rich.columns import Columns
 from rich.theme import Theme
 
 # --- Core Components ---
-from .config import DayhoffConfig
+# Import ALLOWED_WORKFLOW_EXECUTORS from config
+from .config import DayhoffConfig, ALLOWED_WORKFLOW_EXECUTORS
 from .git_tracking import GitTracker, Event
 
 # --- File System ---
@@ -158,10 +159,18 @@ class DayhoffService:
             # --- Test Command ---
             # Updated help text for /test
             "test": {"handler": self._handle_test, "help": "Run or show information about internal tests. Usage: /test [test_name]"},
-            # --- Config ---
-            "config_get": {"handler": self._handle_config_get, "help": "Get a config value. Usage: /config_get <section> <key> [default_value]"},
-            "config_ssh": {"handler": self._handle_config_ssh, "help": "Get SSH configuration. Usage: /config_ssh"},
-            "config_save": {"handler": self._handle_config_save, "help": "Save current configuration. Usage: /config_save"},
+            # --- Config (Consolidated) ---
+            "config": {
+                "handler": self._handle_config,
+                "help": textwrap.dedent("""\
+                    Manage Dayhoff configuration.
+                    Usage: /config <subcommand> [options]
+                    Subcommands:
+                      get <section> <key> [default] : Get a specific config value.
+                      set <section> <key> <value>   : Set a config value (and save). Type '/config set' for examples.
+                      save                          : Manually save the current configuration.
+                      show [section|ssh]            : Show a specific section, 'ssh' (HPC config), or all config.""")
+            },
             # --- File System ---
             "fs_find_seq": {"handler": self._handle_fs_find_seq, "help": "Find sequence files in a directory (colors output). Usage: /fs_find_seq [root_path]"},
             "fs_head": {"handler": self._handle_fs_head, "help": "Show the first N lines of a local file. Usage: /fs_head <file_path> [num_lines=10]"},
@@ -219,10 +228,11 @@ class DayhoffService:
             try:
                 # Record the event before execution
                 # Consider adding more context like current working directory?
-                # Skip recording for commands that primarily read state or manage connections
+                # Skip recording for commands that primarily read state or manage connections/config
                 # Also skip recording for 'ls' and 'cd' as they are essentially hpc_run wrappers
                 # Skip fs_find_seq as well now, as it's primarily reading state
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
+                # Exclude the consolidated /config command
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
                     self.tracker.record_event(
                         event_type="command_executed",
                         metadata={
@@ -263,8 +273,8 @@ class DayhoffService:
             except Exception as e:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True) # Log full traceback for unexpected errors
                 # Log the exception details?
-                # Skip recording failure for commands that primarily read state or manage connections
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
+                # Skip recording failure for commands that primarily read state or manage connections/config
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
                     self.tracker.record_event(
                         event_type="command_failed",
                         metadata={
@@ -303,6 +313,20 @@ class DayhoffService:
                 # If the command is 'test', call its handler without args to get detailed help
                 if cmd_name == 'test':
                     return self._handle_test([]) # Call test handler with no args for help
+                # If the command is 'config', call its handler with ['--help'] for detailed help
+                elif cmd_name == 'config':
+                    # Use a StringIO to capture the help output from argparse
+                    capture_stream = io.StringIO()
+                    try:
+                        # Temporarily redirect stdout to capture help
+                        original_stdout = sys.stdout
+                        sys.stdout = capture_stream
+                        self._handle_config(['--help']) # Call config handler with --help
+                    except SystemExit: # Argparse calls sys.exit() on --help
+                        pass # Ignore the exit
+                    finally:
+                        sys.stdout = original_stdout # Restore stdout
+                    return capture_stream.getvalue()
                 else:
                     # Ensure the help text includes the usage format
                     help_text = self._command_map[cmd_name]['help']
@@ -314,14 +338,14 @@ class DayhoffService:
                 return f"Unknown command: /{cmd_name}"
 
     # --- Argument Parsers (Example for one command) ---
-    def _create_parser(self, prog: str, description: str) -> argparse.ArgumentParser:
+    def _create_parser(self, prog: str, description: str, add_help: bool = False) -> argparse.ArgumentParser:
         """Creates an ArgumentParser instance for command parsing."""
         # Prevent argparse from exiting the program on error
         # Use the description from the command map if available
         parser = argparse.ArgumentParser(
             prog=f"/{prog}",
             description=description,
-            add_help=False, # We handle help via /help command
+            add_help=add_help, # Allow controlling help flag
             formatter_class=argparse.RawDescriptionHelpFormatter # Preserve formatting
         )
         # Override error handling to raise exception instead of exiting
@@ -329,7 +353,11 @@ class DayhoffService:
             # Include the command name in the error message for clarity
             # Add usage string to the error message
             usage = parser.format_usage()
-            full_message = f"Invalid arguments for /{prog}: {message}\n{usage}"
+            # Avoid duplicating usage if message already contains it
+            if "usage:" not in message.lower():
+                full_message = f"Invalid arguments for /{prog}: {message}\n{usage}"
+            else:
+                full_message = f"Invalid arguments for /{prog}: {message}"
             raise argparse.ArgumentError(None, full_message)
         parser.error = error
         return parser
@@ -438,42 +466,169 @@ class DayhoffService:
             parser.error(f"Unknown test_name '{test_name}'. Available tests are: {valid_names}")
 
 
-    # --- Config Handlers ---
-    def _handle_config_get(self, args: List[str]) -> Any:
-        parser = self._create_parser("config_get", self._command_map['config_get']['help'])
-        parser.add_argument("section", help="Configuration section name")
-        parser.add_argument("key", help="Configuration key name")
-        parser.add_argument("default", nargs='?', default=None, help="Optional default value if key not found")
-        parsed_args = parser.parse_args(args)
+    # --- Consolidated Config Handler ---
+    def _handle_config(self, args: List[str]) -> Any:
+        """Handles the /config command with subparsers."""
+        parser = self._create_parser(
+            "config",
+            self._command_map['config']['help'],
+            add_help=True # Enable default help for the main command
+        )
+        subparsers = parser.add_subparsers(dest="subcommand", title="Subcommands",
+                                           description="Valid subcommands for /config",
+                                           help="Action to perform on the configuration")
+        subparsers.required = True # Require a subcommand
 
-        value = self.config.get(parsed_args.section, parsed_args.key, parsed_args.default)
-        # Nicer output for dicts/lists
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, indent=2)
-        return value
+        # --- Subparser: get ---
+        parser_get = subparsers.add_parser("get", help="Get a specific config value.",
+                                           description="Get a specific config value.",
+                                           add_help=False) # Use custom error handler
+        parser_get.add_argument("section", help="Configuration section name")
+        parser_get.add_argument("key", help="Configuration key name")
+        parser_get.add_argument("default", nargs='?', default=None, help="Optional default value if key not found")
+        # Override error handler for subparser
+        def get_error(message):
+            usage = parser_get.format_usage()
+            full_message = f"Invalid arguments for /config get: {message}\n{usage}"
+            raise argparse.ArgumentError(None, full_message)
+        parser_get.error = get_error
 
-    def _handle_config_ssh(self, args: List[str]) -> Dict[str, str]:
-        parser = self._create_parser("config_ssh", self._command_map['config_ssh']['help'])
-        # No arguments expected, parse to catch extra args
-        parsed_args = parser.parse_args(args)
-        ssh_config = self.config.get_ssh_config()
-        if not ssh_config:
-            return "SSH configuration not found or empty."
-        # Return JSON string for consistent output
-        return json.dumps(ssh_config, indent=2)
+        # --- Subparser: set ---
+        parser_set = subparsers.add_parser("set", help="Set a config value (and save).",
+                                           description="Set a config value (and save).",
+                                           epilog=textwrap.dedent("""\
+                                           Examples:
+                                             /config set HPC username myuser
+                                             /config set DEFAULT log_level DEBUG
+                                             /config set Workflow executor nextflow
+                                           """),
+                                           formatter_class=argparse.RawDescriptionHelpFormatter,
+                                           add_help=False) # Use custom error handler
+        parser_set.add_argument("section", help="Configuration section name")
+        parser_set.add_argument("key", help="Configuration key name")
+        parser_set.add_argument("value", help="Value to set")
+        # Override error handler for subparser
+        def set_error(message):
+            usage = parser_set.format_usage()
+            epilog = parser_set.epilog or ""
+            full_message = f"Invalid arguments for /config set: {message}\n{usage}\n{epilog}"
+            raise argparse.ArgumentError(None, full_message)
+        parser_set.error = set_error
+
+        # --- Subparser: save ---
+        parser_save = subparsers.add_parser("save", help="Manually save the current configuration.",
+                                            description="Manually save the current configuration.",
+                                            add_help=False) # Use custom error handler
+        # Override error handler for subparser
+        def save_error(message):
+            usage = parser_save.format_usage()
+            full_message = f"Invalid arguments for /config save: {message}\n{usage}"
+            raise argparse.ArgumentError(None, full_message)
+        parser_save.error = save_error
 
 
-    def _handle_config_save(self, args: List[str]) -> str:
-        parser = self._create_parser("config_save", self._command_map['config_save']['help'])
-        parsed_args = parser.parse_args(args)
+        # --- Subparser: show ---
+        parser_show = subparsers.add_parser("show", help="Show a specific section, 'ssh' (HPC config), or all config.",
+                                            description="Show a specific section, 'ssh' (HPC config), or all config.",
+                                            add_help=False) # Use custom error handler
+        parser_show.add_argument("section", nargs='?', default=None, help="Section name to show (e.g., HPC, Workflow, ssh) or omit for all.")
+        # Override error handler for subparser
+        def show_error(message):
+            usage = parser_show.format_usage()
+            full_message = f"Invalid arguments for /config show: {message}\n{usage}"
+            raise argparse.ArgumentError(None, full_message)
+        parser_show.error = show_error
+
+        # --- Handle 'set' help ---
+        # If the command is just '/config set' with no other args, show help for 'set'
+        if len(args) == 1 and args[0] == 'set':
+            # Use a StringIO to capture the help output from argparse
+            capture_stream = io.StringIO()
+            try:
+                # Temporarily redirect stdout to capture help
+                original_stdout = sys.stdout
+                sys.stdout = capture_stream
+                # Print help specifically for the 'set' subparser
+                parser_set.print_help()
+            except SystemExit: # Argparse might exit, ignore
+                pass
+            finally:
+                sys.stdout = original_stdout # Restore stdout
+            return capture_stream.getvalue()
+
+        # --- Parse arguments ---
         try:
-            self.config.save_config()
-            config_path = self.config._get_config_path() # Assuming this method exists
-            return f"Configuration saved successfully to {config_path}."
+            # Use parse_args which will handle --help for the main command
+            parsed_args = parser.parse_args(args)
+        except argparse.ArgumentError as e:
+            # Re-raise the error to be caught by execute_command
+            raise e
+        except SystemExit:
+             # Argparse called sys.exit(), likely due to --help.
+             # The help message was already printed by argparse.
+             # Return an empty string to avoid printing None in the REPL.
+             return ""
+
+
+        # --- Execute subcommand logic ---
+        try:
+            if parsed_args.subcommand == "get":
+                value = self.config.get(parsed_args.section, parsed_args.key, parsed_args.default)
+                # Nicer output for dicts/lists (though config values are usually strings)
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value, indent=2)
+                # Return the value as a string for consistency in the REPL
+                return str(value)
+
+            elif parsed_args.subcommand == "set":
+                # Special handling for workflow executor to validate choices
+                if parsed_args.section == 'Workflow' and parsed_args.key == 'executor':
+                    if parsed_args.value not in ALLOWED_WORKFLOW_EXECUTORS:
+                        allowed_str = ", ".join(ALLOWED_WORKFLOW_EXECUTORS)
+                        parser_set.error(f"Invalid value '{parsed_args.value}' for Workflow.executor. Allowed values: {allowed_str}")
+                    # Value is valid, proceed
+                self.config.set(parsed_args.section, parsed_args.key, parsed_args.value)
+                # config.set already logs and saves
+                return f"Config [{parsed_args.section}].{parsed_args.key} set to '{parsed_args.value}' and saved."
+
+            elif parsed_args.subcommand == "save":
+                self.config.save_config()
+                config_path = self.config.config_path # Use the stored path
+                return f"Configuration saved successfully to {config_path}."
+
+            elif parsed_args.subcommand == "show":
+                section_name = parsed_args.section
+                if section_name is None:
+                    # Show all config
+                    config_data = self.config.get_all_config()
+                    if not config_data:
+                        return "Configuration is empty or could not be read."
+                    return f"Current Configuration:\n{json.dumps(config_data, indent=2)}"
+                elif section_name.lower() == 'ssh':
+                    # Special case for SSH config
+                    config_data = self.config.get_ssh_config()
+                    if not config_data:
+                        return "SSH (HPC) configuration section not found or empty."
+                    return f"SSH Configuration (Section: HPC):\n{json.dumps(config_data, indent=2)}"
+                else:
+                    # Show specific section
+                    config_data = self.config.get_section(section_name)
+                    if config_data is None:
+                        # get_section already logged a warning
+                        available_sections = self.config.get_available_sections()
+                        return f"Configuration section '[{section_name}]' not found. Available sections: {', '.join(available_sections)}"
+                    return f"Configuration Section [{section_name}]:\n{json.dumps(config_data, indent=2)}"
+
         except Exception as e:
-            logger.error("Error saving configuration", exc_info=True)
-            # Raise exception to be caught by main handler
-            raise RuntimeError(f"Error saving configuration: {e}") from e
+            logger.error(f"Error during /config {parsed_args.subcommand}: {e}", exc_info=True)
+            # Raise a runtime error to be caught by the main handler
+            raise RuntimeError(f"Error executing config command: {e}") from e
+
+    # --- Removed Old Config Handlers ---
+    # def _handle_config_get(self, args: List[str]) -> Any: ...
+    # def _handle_config_ssh(self, args: List[str]) -> Dict[str, str]: ...
+    # def _handle_config_save(self, args: List[str]) -> str: ...
+    # def _handle_config_set_workflow_executor(self, args: List[str]) -> str: ... # Merged into /config set
 
     # --- File System Handlers ---
     def _handle_fs_find_seq(self, args: List[str]) -> str:
@@ -698,7 +853,7 @@ class DayhoffService:
         """
         ssh_config = self.config.get_ssh_config()
         if not ssh_config:
-            raise ConnectionError("SSH configuration not found. Use /config_set or edit config file.")
+            raise ConnectionError("SSH configuration not found. Use '/config show ssh' to check and '/config set HPC ...' to set.")
 
         try:
             ssh_manager = SSHManager(ssh_config=ssh_config)
@@ -814,11 +969,8 @@ class DayhoffService:
         ssh_manager = None # Define scope outside try
         try:
             # Use the helper, but don't connect immediately here, let the connect() call below handle it
-            ssh_config = self.config.get_ssh_config()
-            if not ssh_config:
-                raise ConnectionError("SSH configuration not found. Use /config_set or edit config file.")
-
-            ssh_manager = SSHManager(ssh_config=ssh_config)
+            # _get_ssh_manager now raises ConnectionError if config is missing
+            ssh_manager = self._get_ssh_manager(connect_now=False) # Get manager instance first
 
             # *** Attempt the connection ***
             if not ssh_manager.connect():
@@ -856,7 +1008,7 @@ class DayhoffService:
             return f"Successfully connected to HPC host: {hostname} (user: {ssh_manager.username}, cwd: {self.remote_cwd})." # Assuming username attribute
 
         except (ConnectionError, TimeoutError, RuntimeError, ValueError) as e:
-            # Catch specific errors from connect() or execute_command()
+            # Catch specific errors from connect() or execute_command() or _get_ssh_manager()
             logger.error(f"Failed to establish persistent SSH connection: {type(e).__name__}: {e}", exc_info=False) # No need for traceback here
             # Ensure the manager is cleaned up if it exists but failed verification
             if ssh_manager:
