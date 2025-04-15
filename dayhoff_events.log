@@ -23,3 +23,4 @@ Event(timestamp=datetime.datetime(2025, 4, 15, 14, 36, 5, 457075), event_type='c
 Event(timestamp=datetime.datetime(2025, 4, 15, 14, 38, 56, 360913), event_type='command_executed', metadata={'command': 'help', 'args': []}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 14, 38, 58, 170453), event_type='command_executed', metadata={'command': 'test', 'args': []}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 14, 40, 17, 400039), event_type='command_executed', metadata={'command': 'test', 'args': []}, user='Robert Hoehndorf')
+Event(timestamp=datetime.datetime(2025, 4, 15, 14, 40, 20, 676569), event_type='command_executed', metadata={'command': 'test', 'args': ['config']}, user='Robert Hoehndorf')
