@@ -18,32 +18,36 @@ from rich.theme import Theme
 # --- Core Components ---
 # Import ALLOWED_WORKFLOW_EXECUTORS from config
 from .config import DayhoffConfig, ALLOWED_WORKFLOW_EXECUTORS
-from .git_tracking import GitTracker, Event
+# Removed GitTracker import as /git_* commands are removed
+# from .git_tracking import GitTracker, Event
 
 # --- File System ---
-# This import should now work correctly
-from .fs import BioDataExplorer
-# Import specific FS components needed for new commands
+# Removed BioDataExplorer import as /fs_find_seq is removed
+# from .fs import BioDataExplorer
+# Import specific FS components needed for remaining commands
 from .fs.local import LocalFileSystem
 from .fs.file_inspector import FileInspector
 
 # --- HPC Bridge ---
 # Import necessary components as needed by commands
-# from .hpc import HPCManager # Maybe too high-level? Use bridge components directly?
 from .hpc_bridge.credentials import CredentialManager
-from .hpc_bridge.file_sync import FileSynchronizer
+# Removed FileSynchronizer import as /hpc_sync_* commands are removed
+# from .hpc_bridge.file_sync import FileSynchronizer
 from .hpc_bridge.slurm_manager import SlurmManager
 from .hpc_bridge.ssh_manager import SSHManager
 
 # --- AI/LLM ---
-from .ai import AnalysisAdvisor
-from .llm.budget import TokenBudget
-from .llm.context import ContextManager
+# Removed AI/LLM imports as related commands are removed
+# from .ai import AnalysisAdvisor
+# from .llm.budget import TokenBudget
+# from .llm.context import ContextManager
 
 # --- Workflows & Environment ---
 # Corrected import: Import WorkflowGenerator from the workflow_generator module
+# Ensure workflow_generator.py exists and contains the WorkflowGenerator class
 from .workflow_generator import WorkflowGenerator
-from .workflows.environment import EnvironmentTracker
+# Removed EnvironmentTracker import as /env_get is removed
+# from .workflows.environment import EnvironmentTracker
 # from .modules import ModuleManager # If needed for a /module command
 
 # --- Helper for argument parsing ---
@@ -136,8 +140,9 @@ class DayhoffService:
 
     def __init__(self):
         # Instantiate core/persistent services
-        self.tracker = GitTracker()
-        self.config = DayhoffConfig()
+        # Removed GitTracker instantiation
+        # self.tracker = GitTracker()
+        self.config = DayhoffConfig() # Instantiates global config object
         # Instantiate components needed by handlers
         self.local_fs = LocalFileSystem()
         self.file_inspector = FileInspector(self.local_fs) # FileInspector needs a filesystem
@@ -157,40 +162,40 @@ class DayhoffService:
         return {
             "help": {"handler": self._handle_help, "help": "Show help for commands. Usage: /help [command_name]"},
             # --- Test Command ---
-            # Updated help text for /test
             "test": {"handler": self._handle_test, "help": "Run or show information about internal tests. Usage: /test [test_name]"},
             # --- Config (Consolidated) ---
             "config": {
                 "handler": self._handle_config,
-                "help": textwrap.dedent("""\
+                "help": textwrap.dedent(f"""\
                     Manage Dayhoff configuration.
                     Usage: /config <subcommand> [options]
                     Subcommands:
                       get <section> <key> [default] : Get a specific config value.
                       set <section> <key> <value>   : Set a config value (and save). Type '/config set' for examples.
                       save                          : Manually save the current configuration.
-                      show [section|ssh]            : Show a specific section, 'ssh' (HPC config), or all config.""")
+                      show [section|ssh]            : Show a specific section, 'ssh' (HPC config), or all config.
+                    Note: Use '/language' command to view/set the preferred workflow language ([Workflow] workflow_language).
+                    Allowed languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}""")
             },
             # --- File System ---
-            "fs_find_seq": {"handler": self._handle_fs_find_seq, "help": "Find sequence files in a directory (colors output). Usage: /fs_find_seq [root_path]"},
+            # Removed /fs_find_seq
             "fs_head": {"handler": self._handle_fs_head, "help": "Show the first N lines of a local file. Usage: /fs_head <file_path> [num_lines=10]"},
-            "fs_detect_format": {"handler": self._handle_fs_detect_format, "help": "Detect the format of a local file. Usage: /fs_detect_format <file_path>"},
+            # Removed /fs_detect_format
             # "fs_stats": {"handler": self._handle_fs_stats, "help": "Get file statistics. Usage: /fs_stats <filepath>"}, # Needs FileStats class
             # "fs_cmd": {"handler": self._handle_fs_cmd, "help": "Run a local shell command. Usage: /fs_cmd <command_string>"}, # Needs LocalFileSystem class
             # --- Git Tracking ---
-            "git_record": {"handler": self._handle_git_record, "help": "Record a custom event. Usage: /git_record <event_type> <metadata_json> [files_json]"},
-            "git_log": {"handler": self._handle_git_log, "help": "Show git event log. Usage: /git_log [limit=10]"},
+            # Removed /git_record
+            # Removed /git_log
             # --- HPC Bridge ---
             "hpc_connect": {"handler": self._handle_hpc_connect, "help": "Establish a persistent SSH connection to the HPC. Usage: /hpc_connect"},
             "hpc_disconnect": {"handler": self._handle_hpc_disconnect, "help": "Close the persistent SSH connection to the HPC. Usage: /hpc_disconnect"},
             "hpc_run": {"handler": self._handle_hpc_run, "help": "Execute a command on the HPC using the active connection. Usage: /hpc_run <command_string>"},
-            "ls": {"handler": self._handle_ls, "help": "List files in the current remote directory with colors. Usage: /ls [ls_options_ignored]"}, # Note: ls options ignored now
+            "hpc_slurm_run": {"handler": self._handle_hpc_slurm_run, "help": "Execute a command within a Slurm allocation (srun). Usage: /hpc_slurm_run <command_string>"}, # Added
+            "ls": {"handler": self._handle_ls, "help": "List files in the current remote directory with colors. Usage: /ls [ls_options_ignored]"},
             "cd": {"handler": self._handle_cd, "help": "Change the current remote directory. Usage: /cd <remote_directory>"},
-            "hpc_sync_up": {"handler": self._handle_hpc_sync_up, "help": "Upload file(s) to HPC. Usage: /hpc_sync_up <local_path_or_glob> <remote_dir>"},
-            "hpc_sync_down": {"handler": self._handle_hpc_sync_down, "help": "Download file(s) from HPC. Usage: /hpc_sync_down <remote_path_or_glob> <local_dir>"},
-            # "hpc_ssh_cmd": {"handler": self._handle_hpc_ssh_cmd, "help": "Execute a command via SSH. Usage: /hpc_ssh_cmd <command_string>"}, # Removed
-            "hpc_slurm_submit": {"handler": self._handle_hpc_slurm_submit, "help": "Submit a Slurm job. Usage: /hpc_slurm_submit <script_path> [options_json]"},
-            # Updated help text for hpc_slurm_status
+            # Removed /hpc_sync_up
+            # Removed /hpc_sync_down
+            "hpc_slurm_submit": {"handler": self._handle_hpc_slurm_submit, "help": "Submit a Slurm job script. Usage: /hpc_slurm_submit <script_path> [options_json]"},
             "hpc_slurm_status": {
                 "handler": self._handle_hpc_slurm_status,
                 "help": textwrap.dedent("""\
@@ -203,14 +208,24 @@ class DayhoffService:
             },
             "hpc_cred_get": {"handler": self._handle_hpc_cred_get, "help": "Get HPC password for user (if stored). Usage: /hpc_cred_get <username>"},
             # --- AI/LLM ---
-            "ai_suggest": {"handler": self._handle_ai_suggest, "help": "Suggest analysis based on data type and metadata. Usage: /ai_suggest <data_type> <metadata_json>"},
-            "llm_budget": {"handler": self._handle_llm_budget, "help": "Show remaining LLM token budget. Usage: /llm_budget"},
-            "llm_context_update": {"handler": self._handle_llm_context_update, "help": "Update LLM context. Usage: /llm_context_update <updates_json>"},
-            "llm_context_get": {"handler": self._handle_llm_context_get, "help": "Get current LLM context. Usage: /llm_context_get"},
+            # Removed /ai_suggest
+            # Removed /llm_budget
+            # Removed /llm_context_update
+            # Removed /llm_context_get
             # --- Workflows & Environment ---
-            "wf_gen_cwl": {"handler": self._handle_wf_gen_cwl, "help": "Generate CWL workflow. Usage: /wf_gen_cwl <steps_json>"},
-            "wf_gen_nextflow": {"handler": self._handle_wf_gen_nextflow, "help": "Generate Nextflow workflow. Usage: /wf_gen_nextflow <steps_json>"},
-            "env_get": {"handler": self._handle_env_get, "help": "Get environment details. Usage: /env_get"},
+            "wf_gen": {"handler": self._handle_wf_gen, "help": "Generate workflow using the configured language. Usage: /wf_gen <steps_json>"}, # Added
+            "language": { # Added
+                "handler": self._handle_language,
+                "help": textwrap.dedent(f"""\
+                    View or set the preferred workflow language for generation.
+                    Usage:
+                      /language             : Show the current language setting.
+                      /language <language>  : Set the language (e.g., /language cwl).
+                    Allowed languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}""")
+            },
+            # Removed /env_get
+            # Removed /wf_gen_cwl
+            # Removed /wf_gen_nextflow
         }
 
     # --- Added Method ---
@@ -220,27 +235,13 @@ class DayhoffService:
     # --- End Added Method ---
 
     def execute_command(self, command: str, args: List[str]) -> Any:
-        """Execute a command and track it in git"""
+        """Execute a command""" # Removed git tracking mention
         logger.info(f"Executing command: /{command} with args: {args}")
         if command in self._command_map:
             command_info = self._command_map[command]
             handler = command_info["handler"]
             try:
-                # Record the event before execution
-                # Consider adding more context like current working directory?
-                # Skip recording for commands that primarily read state or manage connections/config
-                # Also skip recording for 'ls' and 'cd' as they are essentially hpc_run wrappers
-                # Skip fs_find_seq as well now, as it's primarily reading state
-                # Exclude the consolidated /config command
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
-                    self.tracker.record_event(
-                        event_type="command_executed",
-                        metadata={
-                            "command": command,
-                            "args": args # Log raw args
-                        }
-                        # Files might be implicitly tracked by handlers if needed
-                    )
+                # Removed event recording logic
                 # Execute the command handler
                 result = handler(args)
                 logger.info(f"Command /{command} executed successfully.")
@@ -272,18 +273,7 @@ class DayhoffService:
                  return f"Timeout Error: {e}"
             except Exception as e:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True) # Log full traceback for unexpected errors
-                # Log the exception details?
-                # Skip recording failure for commands that primarily read state or manage connections/config
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
-                    self.tracker.record_event(
-                        event_type="command_failed",
-                        metadata={
-                            "command": command,
-                            "args": args,
-                            "error": str(e),
-                            "error_type": type(e).__name__
-                        }
-                    )
+                # Removed failure recording logic
                 # Return a user-friendly error message
                 return f"Error: {type(e).__name__}: {e}"
         else:
@@ -294,7 +284,12 @@ class DayhoffService:
     def _handle_help(self, args: List[str]) -> str:
         if not args:
             # General help
-            help_lines = ["Available commands:"]
+            current_language = self.config.get_workflow_language() # Get current language
+            help_lines = [
+                f"Dayhoff REPL - Type /<command> [arguments] to execute.",
+                f"Current Workflow Language: {current_language} (set with /language)", # Added language display
+                "\nAvailable commands:"
+            ]
             # Sort commands alphabetically for better readability
             for cmd, info in sorted(self._command_map.items()):
                 # Provide a slightly more descriptive summary if possible
@@ -327,6 +322,19 @@ class DayhoffService:
                     finally:
                         sys.stdout = original_stdout # Restore stdout
                     return capture_stream.getvalue()
+                # If the command is 'language', call its handler with ['--help'] for detailed help
+                elif cmd_name == 'language':
+                     # Use a StringIO to capture the help output from argparse
+                     capture_stream = io.StringIO()
+                     try:
+                         original_stdout = sys.stdout
+                         sys.stdout = capture_stream
+                         self._handle_language(['--help']) # Call language handler with --help
+                     except SystemExit: # Argparse calls sys.exit() on --help
+                         pass # Ignore the exit
+                     finally:
+                         sys.stdout = original_stdout # Restore stdout
+                     return capture_stream.getvalue()
                 else:
                     # Ensure the help text includes the usage format
                     help_text = self._command_map[cmd_name]['help']
@@ -369,18 +377,19 @@ class DayhoffService:
         # Assume 'examples' is relative to the CWD where the REPL is started
         examples_dir = "examples"
 
+        # Updated list of available tests
         available_tests = {
             "cli": "Test non-interactive CLI execution (`dayhoff execute ...`).",
             "config": "Test loading and printing the current configuration.",
-            "file_explorer": "Test local file head and format detection.",
-            "git_tracking": "Test GitTracker event recording and history retrieval.",
+            "file_explorer": "Test local file head.", # Updated description
+            # Removed git_tracking test
             "hpc_bridge": "Test mock SSH/Slurm interactions.",
-            "llm_core": "Test mock LLM prompt/response/context flow.",
+            # Removed llm_core test
             "remote_fs": "Test SSH connection and remote `ls` execution.",
-            "remote_workflow": "Test remote CWL workflow execution via SSH.",
-            "session_tracking": "Test GitTracker with simulated session events.",
+            "remote_workflow": "Test remote workflow execution via SSH (using configured language).", # Updated description
+            # Removed session_tracking test
             "ssh_connection": "Test basic SSH connection and simple command execution.",
-            "workflow": "Test local CWL generation and execution.",
+            "workflow": "Test local workflow generation (using configured language) and execution.", # Updated description
             # Add more keys as needed, matching filenames or logical test groups
         }
 
@@ -496,11 +505,12 @@ class DayhoffService:
         # --- Subparser: set ---
         parser_set = subparsers.add_parser("set", help="Set a config value (and save).",
                                            description="Set a config value (and save).",
-                                           epilog=textwrap.dedent("""\
+                                           epilog=textwrap.dedent(f"""\
                                            Examples:
                                              /config set HPC username myuser
                                              /config set DEFAULT log_level DEBUG
-                                             /config set Workflow executor nextflow
+                                             /config set Workflow workflow_language nextflow
+                                           Allowed workflow languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}
                                            """),
                                            formatter_class=argparse.RawDescriptionHelpFormatter,
                                            add_help=False) # Use custom error handler
@@ -581,11 +591,11 @@ class DayhoffService:
                 return str(value)
 
             elif parsed_args.subcommand == "set":
-                # Special handling for workflow executor to validate choices
-                if parsed_args.section == 'Workflow' and parsed_args.key == 'executor':
+                # Special handling for workflow language to validate choices
+                if parsed_args.section == 'Workflow' and parsed_args.key == 'workflow_language':
                     if parsed_args.value not in ALLOWED_WORKFLOW_EXECUTORS:
                         allowed_str = ", ".join(ALLOWED_WORKFLOW_EXECUTORS)
-                        parser_set.error(f"Invalid value '{parsed_args.value}' for Workflow.executor. Allowed values: {allowed_str}")
+                        parser_set.error(f"Invalid value '{parsed_args.value}' for Workflow.workflow_language. Allowed values: {allowed_str}")
                     # Value is valid, proceed
                 self.config.set(parsed_args.section, parsed_args.key, parsed_args.value)
                 # config.set already logs and saves
@@ -631,50 +641,7 @@ class DayhoffService:
     # def _handle_config_set_workflow_executor(self, args: List[str]) -> str: ... # Merged into /config set
 
     # --- File System Handlers ---
-    def _handle_fs_find_seq(self, args: List[str]) -> str:
-        """Handles the /fs_find_seq command, coloring the output."""
-        parser = self._create_parser("fs_find_seq", self._command_map['fs_find_seq']['help'])
-        parser.add_argument("root_path", nargs='?', default='.', help="Optional root directory to search (default: current directory)")
-        parsed_args = parser.parse_args(args)
-
-        try:
-            # Instantiate BioDataExplorer with the specified or default path
-            explorer = BioDataExplorer(root_path=parsed_args.root_path)
-            files = list(explorer.find_sequence_files()) # Collect results from iterator
-            abs_root = os.path.abspath(parsed_args.root_path)
-
-            if not files:
-                return f"No sequence files found in '{abs_root}'."
-
-            # Colorize the output
-            colored_files = []
-            for f_path in files:
-                abs_path = os.path.abspath(f_path)
-                # Colorize only the basename part
-                dirname = os.path.dirname(abs_path)
-                basename = os.path.basename(abs_path)
-                is_dir = os.path.isdir(abs_path) # Check if it's a directory (though find_sequence_files shouldn't return dirs)
-                colored_basename = colorize_filename(basename, is_dir=is_dir)
-
-                # Combine directory path (plain) with colored basename
-                # Use Text.assemble for combining plain string and Text object
-                full_colored_path = Text.assemble(dirname + os.path.sep, colored_basename)
-                colored_files.append(full_colored_path)
-
-            # Use rich.print to capture the colored output
-            global string_io, capture_console
-            string_io.seek(0)
-            string_io.truncate(0)
-            capture_console.print(f"Found sequence files in '{abs_root}':")
-            for item in colored_files:
-                capture_console.print(item) # Print each Text object
-            return string_io.getvalue().strip() # Return captured string
-
-        except ValueError as e: # Catch specific error from BioDataExplorer init
-             raise e
-        except Exception as e:
-            logger.error(f"Error finding sequence files in {parsed_args.root_path}", exc_info=True)
-            raise RuntimeError(f"Error finding sequence files: {e}") from e
+    # Removed _handle_fs_find_seq
 
     def _handle_fs_head(self, args: List[str]) -> str:
         """Handles the /fs_head command."""
@@ -722,119 +689,11 @@ class DayhoffService:
             # Let the main execute_command handler catch and report generic errors
             raise e
 
-    def _handle_fs_detect_format(self, args: List[str]) -> str:
-        """Handles the /fs_detect_format command."""
-        parser = self._create_parser("fs_detect_format", self._command_map['fs_detect_format']['help'])
-        parser.add_argument("file_path", help="Path to the local file")
-        parsed_args = parser.parse_args(args)
-        abs_path = os.path.abspath(parsed_args.file_path) # Get absolute path
-
-        try:
-            # Use the LocalFileSystem instance's method
-            file_format = self.local_fs.detect_format(parsed_args.file_path)
-            # Colorize filename in output
-            dirname = os.path.dirname(abs_path)
-            basename = os.path.basename(abs_path)
-            colored_basename = colorize_filename(basename, is_dir=False)
-
-            if file_format:
-                result_text = Text.assemble("Detected format for '", dirname + os.path.sep, colored_basename, f"': {file_format}")
-            else:
-                 # Check if file exists before saying format unknown
-                 if not self.local_fs.exists(parsed_args.file_path):
-                     raise FileNotFoundError(f"File not found at '{abs_path}'")
-                 result_text = Text.assemble("Could not detect format for '", dirname + os.path.sep, colored_basename, "'.")
-
-            # Capture output using rich console
-            global string_io, capture_console
-            string_io.seek(0)
-            string_io.truncate(0)
-            capture_console.print(result_text)
-            return string_io.getvalue().strip()
-
-        except FileNotFoundError:
-             raise FileNotFoundError(f"File not found at '{abs_path}'")
-        except Exception as e:
-            logger.error(f"Error detecting format for file {parsed_args.file_path}", exc_info=True)
-            raise e
-
+    # Removed _handle_fs_detect_format
 
     # --- Git Tracking Handlers ---
-    def _handle_git_record(self, args: List[str]) -> str:
-        parser = self._create_parser("git_record", self._command_map['git_record']['help'])
-        parser.add_argument("event_type", help="Type of the event (e.g., 'manual_step')")
-        parser.add_argument("metadata_json", help="Metadata as a JSON string (e.g., '{\"key\": \"value\"}')")
-        parser.add_argument("files_json", nargs='?', default='{}', help="Optional dictionary of files to track as JSON string (e.g., '{\"input.txt\": \"path/to/input.txt\"}')")
-        parsed_args = parser.parse_args(args)
-
-        try:
-            metadata = json.loads(parsed_args.metadata_json)
-            # Ensure metadata is a dictionary
-            if not isinstance(metadata, dict):
-                # Use parser error for consistency
-                parser.error("Metadata JSON must decode to a dictionary.")
-
-            files_dict = json.loads(parsed_args.files_json)
-            if not isinstance(files_dict, dict):
-                 parser.error("Files JSON must decode to a dictionary.")
-
-            # Optional: Validate file paths in files_dict exist?
-            # for logical_name, path in files_dict.items():
-            #     if not os.path.exists(path):
-            #         logger.warning(f"File path for '{logical_name}' does not exist: {path}")
-            #         # Decide whether to raise an error or just warn
-
-            event_id = self.tracker.record_event(
-                event_type=parsed_args.event_type,
-                metadata=metadata,
-                files=files_dict if files_dict else None # Pass None if empty
-            )
-            return f"Event '{parsed_args.event_type}' recorded with ID: {event_id}."
-        except json.JSONDecodeError as e:
-            # Raise a more specific error via parser if possible, otherwise generic
-            raise ValueError(f"Invalid JSON provided: {e}") from e
-        except ValueError as e: # Catch our custom validation error
-            raise e # Let main handler catch it
-        except Exception as e:
-            logger.error("Error recording git event", exc_info=True)
-            raise RuntimeError(f"Error recording event: {e}") from e
-
-    def _handle_git_log(self, args: List[str]) -> str:
-        """Handles the /git_log command."""
-        parser = self._create_parser("git_log", self._command_map['git_log']['help'])
-        parser.add_argument("limit", type=int, nargs='?', default=10, help="Maximum number of events to show (default: 10)")
-        parsed_args = parser.parse_args(args)
-
-        if parsed_args.limit <= 0:
-            parser.error("Limit must be positive.")
-
-        try:
-            history = self.tracker.get_event_history()
-            if not history:
-                return "No events recorded yet."
-
-            # Apply limit (show most recent first)
-            limited_history = history[-parsed_args.limit:]
-
-            log_lines = ["Git Event History (most recent first):"]
-            for event in reversed(limited_history): # Reverse to show newest first
-                ts = event.timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                meta_summary = json.dumps(event.metadata, sort_keys=True)
-                # Truncate long metadata for display?
-                if len(meta_summary) > 80:
-                    meta_summary = meta_summary[:77] + "..."
-                log_lines.append(f"- {ts} [{event.event_type}] {meta_summary}")
-                if event.files:
-                    files_summary = ", ".join(f"{k}: {v}" for k, v in event.files.items())
-                    if len(files_summary) > 80:
-                         files_summary = files_summary[:77] + "..."
-                    log_lines.append(f"    Files: {files_summary}")
-
-            return "\n".join(log_lines)
-        except Exception as e:
-            logger.error("Error retrieving git log", exc_info=True)
-            raise e
-
+    # Removed _handle_git_record
+    # Removed _handle_git_log
 
     # --- HPC Bridge Handlers ---
     def _get_ssh_manager(self, connect_now: bool = False) -> SSHManager:
@@ -852,8 +711,8 @@ class DayhoffService:
                              and the connection fails.
         """
         ssh_config = self.config.get_ssh_config()
-        if not ssh_config:
-            raise ConnectionError("SSH configuration not found. Use '/config show ssh' to check and '/config set HPC ...' to set.")
+        if not ssh_config or not ssh_config.get('host'): # Also check if host is set
+            raise ConnectionError("HPC host configuration missing. Use '/config set HPC host <hostname>' and potentially other HPC settings.")
 
         try:
             ssh_manager = SSHManager(ssh_config=ssh_config)
@@ -873,42 +732,10 @@ class DayhoffService:
              logger.error(f"Failed to initialize SSHManager: {e}", exc_info=True)
              raise ConnectionError(f"Failed to initialize SSH connection: {e}") from e
 
-
-    def _get_file_synchronizer(self) -> FileSynchronizer:
-        """Helper to get an initialized FileSynchronizer with an active connection."""
-        # This now requires an active connection.
-        # If self.active_ssh_manager:
-        #     logger.debug("Using active SSH connection for file synchronizer.")
-        #     ssh_manager = self.active_ssh_manager
-        # else:
-        #     logger.debug("Creating temporary SSH connection for file synchronizer.")
-        #     # Request immediate connection and handle potential error
-        #     ssh_manager = self._get_ssh_manager(connect_now=True)
-
-        # Let's always use a temporary connection for sync for now, simplifies state management
-        logger.debug("Creating temporary SSH connection for file synchronizer.")
-        ssh_manager = self._get_ssh_manager(connect_now=True) # Ensure connection is attempted
-
-        try:
-            # Pass the connected SSHManager instance
-            return FileSynchronizer(ssh_manager=ssh_manager)
-        except Exception as e:
-             logger.error(f"Failed to initialize FileSynchronizer: {e}", exc_info=True)
-             # Close the temporary connection if synchronizer init fails
-             if ssh_manager: ssh_manager.disconnect()
-             raise ConnectionError(f"Failed to initialize file synchronizer: {e}") from e
-
+    # Removed _get_file_synchronizer as sync commands are removed
 
     def _get_slurm_manager(self) -> SlurmManager:
         """Helper to get an initialized SlurmManager with an active connection."""
-        # This now requires an active connection.
-        # If self.active_ssh_manager:
-        #     logger.debug("Using active SSH connection for Slurm manager.")
-        #     ssh_manager = self.active_ssh_manager
-        # else:
-        #     logger.debug("Creating temporary SSH connection for Slurm manager.")
-        #     ssh_manager = self._get_ssh_manager(connect_now=True) # Ensure connection is attempted
-
         # Let's always use a temporary connection for Slurm for now
         logger.debug("Creating temporary SSH connection for Slurm manager.")
         ssh_manager = self._get_ssh_manager(connect_now=True) # Ensure connection is attempted
@@ -922,7 +749,7 @@ class DayhoffService:
              if ssh_manager: ssh_manager.disconnect()
              raise ConnectionError(f"Failed to initialize Slurm manager: {e}") from e
 
-    # --- New HPC Connection Handlers ---
+    # --- HPC Connection Handlers ---
     def _handle_hpc_connect(self, args: List[str]) -> str:
         """Establishes and stores a persistent SSH connection."""
         parser = self._create_parser("hpc_connect", self._command_map['hpc_connect']['help'])
@@ -1054,13 +881,10 @@ class DayhoffService:
     def _handle_hpc_run(self, args: List[str]) -> str:
         """Executes a command using the active persistent SSH connection, respecting remote_cwd."""
         parser = self._create_parser("hpc_run", self._command_map['hpc_run']['help'])
-        # Use parse_known_args to allow arbitrary flags/args for the remote command
-        # parser.add_argument("command", nargs='+', help="The command string to execute remotely")
-        # parsed_args = parser.parse_args(args) # Will raise error if no command provided
         # Instead of strict parsing, just check if args exist
         if not args:
              # Re-use parser's error mechanism to show help
-             parser.error("the following arguments are required: command")
+             parser.error("the following arguments are required: command_string")
 
         if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
             # Raise ConnectionError to be caught by main handler
@@ -1072,9 +896,6 @@ class DayhoffService:
 
 
         # Rejoin args into the command string, quoting arguments appropriately
-        # shlex.join is available in Python 3.8+
-        # command_string = shlex.join(args) # Preferred if >= 3.8
-        # Manual joining with quoting for broader compatibility:
         command_string = " ".join(shlex.quote(arg) for arg in args)
 
 
@@ -1115,6 +936,65 @@ class DayhoffService:
             logger.error(f"Unexpected error executing command via active SSH connection: {e}", exc_info=True)
             # Let the main handler report this as a runtime error.
             raise RuntimeError(f"Unexpected error executing remote command: {e}") from e
+
+    # --- New /hpc_slurm_run Handler ---
+    def _handle_hpc_slurm_run(self, args: List[str]) -> str:
+        """Executes a command within a Slurm allocation (srun) using the active SSH connection."""
+        parser = self._create_parser("hpc_slurm_run", self._command_map['hpc_slurm_run']['help'])
+        # Just check if args exist, similar to hpc_run
+        if not args:
+             parser.error("the following arguments are required: command_string")
+
+        if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
+            raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
+        if not self.remote_cwd:
+             raise ConnectionError("Remote working directory unknown. Please use /hpc_connect again.")
+
+        # Rejoin user's command args
+        user_command_string = " ".join(shlex.quote(arg) for arg in args)
+
+        # Construct the srun command. Using --pty is good for interactive-like behavior.
+        # Add other srun options? For now, keep it simple.
+        # TODO: Consider allowing user to pass srun options? e.g., /hpc_slurm_run --nodes 1 --ntasks 4 my_command
+        srun_command = f"srun --pty {user_command_string}"
+
+        # Construct the full command with cd prefix
+        full_command = f"cd {shlex.quote(self.remote_cwd)} && {srun_command}"
+
+        try:
+            logger.info(f"Executing command via srun using active SSH connection: {full_command}")
+            # Use a potentially longer timeout for srun commands? Default 60s might be short. Let's try 300s (5 min).
+            # The timeout in execute_command applies to the entire SSH command execution.
+            output = self.active_ssh_manager.execute_command(full_command, timeout=300)
+            # Return raw output from srun
+            return output
+        except ConnectionError as e:
+            # Connection might have dropped
+            logger.error(f"Connection error during /hpc_slurm_run: {e}", exc_info=False)
+            try: self.active_ssh_manager.disconnect()
+            except Exception: pass
+            self.active_ssh_manager = None
+            self.remote_cwd = None
+            raise ConnectionError(f"Connection error during srun execution: {e}. Connection closed.") from e
+        except TimeoutError as e:
+             logger.error(f"Timeout error during /hpc_slurm_run (timeout=300s): {e}", exc_info=False)
+             raise TimeoutError(f"Command execution via srun timed out after 300 seconds: {e}") from e
+        except RuntimeError as e:
+             # Catch errors from execute_command, potentially Slurm errors reported via stderr
+             logger.error(f"Runtime error during /hpc_slurm_run: {e}", exc_info=False)
+             # Check for common Slurm errors in the message?
+             if "srun: error:" in str(e):
+                 # Raise a more specific error? For now, just re-raise.
+                 raise RuntimeError(f"Slurm execution failed: {e}") from e
+             elif "No such file or directory" in str(e): # Check for cd error
+                 logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid. Resetting to '~'.")
+                 self.remote_cwd = "~"
+                 raise RuntimeError(f"Remote directory '{self.remote_cwd}' likely invalid. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
+             raise e # Re-raise other runtime errors
+        except Exception as e:
+            logger.error(f"Unexpected error executing command via srun: {e}", exc_info=True)
+            raise RuntimeError(f"Unexpected error executing remote srun command: {e}") from e
+
 
     # --- Modified /ls Handler ---
     def _handle_ls(self, args: List[str]) -> str:
@@ -1232,119 +1112,11 @@ class DayhoffService:
 
     # --- End New /ls and /cd Handlers ---
 
-
-    def _handle_hpc_sync_up(self, args: List[str]) -> str:
-        parser = self._create_parser("hpc_sync_up", self._command_map['hpc_sync_up']['help'])
-        parser.add_argument("local_path", help="Local file or glob pattern (e.g., 'data/*.fastq')")
-        parser.add_argument("remote_dir", help="Remote destination directory")
-        parsed_args = parser.parse_args(args)
-
-        synchronizer = None # Define outside try for finally block
-        ssh_manager = None # Define outside try for finally block
-        try:
-            # Uses temporary connection via _get_file_synchronizer() which now connects
-            synchronizer = self._get_file_synchronizer()
-            ssh_manager = synchronizer.ssh_manager # Get ref to manager for cleanup
-
-            # FileSynchronizer.upload_files expects List[str], handle potential glob
-            import glob
-            local_paths = glob.glob(parsed_args.local_path)
-            if not local_paths:
-                # Use os.path.exists for single files for better error message
-                if not glob.has_magic(parsed_args.local_path) and not os.path.exists(parsed_args.local_path):
-                     raise FileNotFoundError(f"Local path not found: '{parsed_args.local_path}'")
-                return f"Warning: No local files found matching '{parsed_args.local_path}'. Nothing uploaded."
-
-            logger.info(f"Uploading {len(local_paths)} files to {parsed_args.remote_dir}...")
-            # Assuming upload_files returns bool or raises error
-            success = synchronizer.upload_files(local_paths, parsed_args.remote_dir)
-            if success: # Or if no exception was raised
-                return f"Successfully uploaded {len(local_paths)} file(s) matching '{parsed_args.local_path}' to {parsed_args.remote_dir}."
-            else:
-                # If upload_files returns False without raising error
-                raise RuntimeError("File upload failed. Check logs for details.")
-        except (ConnectionError, FileNotFoundError, RuntimeError) as e:
-            # Let main handler report these specific errors
-            raise e
-        except Exception as e:
-            logger.error("Error during HPC upload", exc_info=True)
-            # Raise a generic runtime error
-            raise RuntimeError(f"Error during upload: {e}") from e
-        finally:
-            # Ensure temporary connection is closed
-            if ssh_manager:
-                try:
-                    ssh_manager.disconnect()
-                    logger.debug("Closed temporary SSH connection for sync up.")
-                except Exception as close_err:
-                    logger.warning(f"Error closing temporary SSH connection after sync up: {close_err}")
-
-
-    def _handle_hpc_sync_down(self, args: List[str]) -> str:
-        parser = self._create_parser("hpc_sync_down", self._command_map['hpc_sync_down']['help'])
-        parser.add_argument("remote_path", help="Remote file or glob pattern (requires remote shell expansion)")
-        parser.add_argument("local_dir", help="Local destination directory")
-        parsed_args = parser.parse_args(args)
-
-        synchronizer = None # Define outside try for finally block
-        ssh_manager = None # Define outside try for finally block
-        try:
-            # Uses temporary connection via _get_file_synchronizer() which now connects
-            synchronizer = self._get_file_synchronizer()
-            ssh_manager = synchronizer.ssh_manager # Get ref to manager for cleanup
-
-            # download_files expects List[str]. Handling remote globs requires executing
-            # 'ls <remote_glob>' via SSH first, which adds complexity.
-            # Current assumption: User provides specific paths or a pattern understood
-            # by the underlying sync tool (e.g., rsync).
-            # For simplicity, we pass the pattern directly. Adjust if FileSynchronizer needs explicit list.
-            remote_paths = [parsed_args.remote_path] # Pass the pattern/path as a single item list
-            logger.info(f"Attempting download of '{parsed_args.remote_path}' to {parsed_args.local_dir}...")
-
-            # Ensure local directory exists
-            os.makedirs(parsed_args.local_dir, exist_ok=True)
-
-            success = synchronizer.download_files(remote_paths, parsed_args.local_dir)
-            if success: # Or if no exception raised
-                 # We don't know exactly how many files were downloaded if it was a glob
-                 return f"Successfully downloaded files matching '{parsed_args.remote_path}' to {parsed_args.local_dir}."
-            else:
-                 raise RuntimeError("File download failed. Check logs for details.")
-        except (ConnectionError, RuntimeError) as e:
-             raise e
-        except Exception as e:
-            logger.error("Error during HPC download", exc_info=True)
-            raise RuntimeError(f"Error during download: {e}") from e
-        finally:
-            # Ensure temporary connection is closed
-            if ssh_manager:
-                 try:
-                     ssh_manager.disconnect()
-                     logger.debug("Closed temporary SSH connection for sync down.")
-                 except Exception as close_err:
-                     logger.warning(f"Error closing temporary SSH connection after sync down: {close_err}")
+    # Removed _handle_hpc_sync_up
+    # Removed _handle_hpc_sync_down
 
     # --- Removed Handler ---
-    # def _handle_hpc_ssh_cmd(self, args: List[str]) -> str:
-    #     parser = self._create_parser("hpc_ssh_cmd", self._command_map['hpc_ssh_cmd']['help'])
-    #     parser.add_argument("command", nargs='+', help="The command string to execute remotely")
-    #     parsed_args = parser.parse_args(args) # Will raise error if no command provided
-    #
-    #     command_string = " ".join(parsed_args.command) # Rejoin args into the command
-    #
-    #     try:
-    #         ssh_manager = self._get_ssh_manager() # Uses temporary connection
-    #         logger.info(f"Executing SSH command: {command_string}")
-    #         output = ssh_manager.execute_command(command_string)
-    #         # Close temporary connection
-    #         if hasattr(ssh_manager, 'close'): ssh_manager.close()
-    #         # Return output, potentially trimming whitespace
-    #         return f"SSH command output:\n---\n{output.strip()}\n---"
-    #     except ConnectionError as e:
-    #         raise e
-    #     except Exception as e:
-    #         logger.error("Error executing SSH command", exc_info=True)
-    #         raise RuntimeError(f"Error executing SSH command: {e}") from e
+    # def _handle_hpc_ssh_cmd(self, args: List[str]) -> str: ...
     # --- End Removed Handler ---
 
     def _handle_hpc_slurm_submit(self, args: List[str]) -> str:
@@ -1541,93 +1313,19 @@ class DayhoffService:
             raise RuntimeError(f"Error retrieving credentials: {e}") from e
 
     # --- AI/LLM Handlers ---
-    def _handle_ai_suggest(self, args: List[str]) -> str:
-        parser = self._create_parser("ai_suggest", self._command_map['ai_suggest']['help'])
-        parser.add_argument("data_type", help="Type of data (e.g., 'fastq', 'vcf', 'bam')")
-        parser.add_argument("metadata_json", help="Metadata relevant to the data as JSON string (e.g., '{\"sample_id\": \"s1\", \"condition\": \"treated\"}')")
-        parsed_args = parser.parse_args(args)
-
-        try:
-            metadata = json.loads(parsed_args.metadata_json)
-            if not isinstance(metadata, dict):
-                parser.error("Metadata JSON must decode to a dictionary.")
-
-            # Assuming AnalysisAdvisor can be instantiated directly
-            # It might need configuration (e.g., API keys) passed via self.config
-            advisor = AnalysisAdvisor(config=self.config) # Pass config if needed
-            logger.info(f"Requesting analysis suggestion for data type '{parsed_args.data_type}'")
-            suggestion = advisor.suggest_analysis(parsed_args.data_type, metadata)
-            # Check if suggestion is implemented
-            if suggestion is None:
-                 return "Analysis suggestion feature is not fully implemented yet."
-            return f"Analysis Suggestion:\n---\n{suggestion}\n---"
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON provided for metadata: {e}") from e
-        except ValueError as e: # Catch our validation error
-             raise e
-        except Exception as e:
-            logger.error("Error getting analysis suggestion", exc_info=True)
-            raise RuntimeError(f"Error getting analysis suggestion: {e}") from e
-
-    def _handle_llm_budget(self, args: List[str]) -> str:
-        parser = self._create_parser("llm_budget", self._command_map['llm_budget']['help'])
-        parsed_args = parser.parse_args(args)
-        try:
-            # Assuming TokenBudget might read limits from config
-            budget = TokenBudget(config=self.config) # Pass config if needed
-            remaining = budget.remaining()
-            limit = budget.limit # Assuming a 'limit' property exists
-            # Check if budget is implemented
-            if remaining is None or limit is None:
-                 return "LLM budget tracking is not fully implemented or configured."
-            return f"LLM Token Budget: {remaining} remaining / {limit} limit"
-        except Exception as e:
-            logger.error("Error getting token budget", exc_info=True)
-            raise RuntimeError(f"Error getting token budget: {e}") from e
-
-    def _handle_llm_context_update(self, args: List[str]) -> str:
-        parser = self._create_parser("llm_context_update", self._command_map['llm_context_update']['help'])
-        parser.add_argument("updates_json", help="Updates as JSON string (dictionary)")
-        parsed_args = parser.parse_args(args)
-
-        try:
-            updates = json.loads(parsed_args.updates_json)
-            if not isinstance(updates, dict):
-                parser.error("Updates JSON must decode to a dictionary.")
-
-            # Assuming ContextManager might be stateful or read from config/disk
-            context_manager = ContextManager(config=self.config) # Pass config if needed
-            context_manager.update(updates) # Assume this raises errors if needed
-            logger.info(f"LLM context updated with keys: {list(updates.keys())}")
-            return "LLM context updated."
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON provided for updates: {e}") from e
-        except ValueError as e: # Catch validation errors
-             raise e
-        except Exception as e:
-            logger.error("Error updating LLM context", exc_info=True)
-            raise RuntimeError(f"Error updating LLM context: {e}") from e
-
-    def _handle_llm_context_get(self, args: List[str]) -> str:
-        parser = self._create_parser("llm_context_get", self._command_map['llm_context_get']['help'])
-        parsed_args = parser.parse_args(args)
-        try:
-            # Assuming ContextManager might be stateful or read from config/disk
-            context_manager = ContextManager(config=self.config) # Pass config if needed
-            context = context_manager.get()
-            if not context: # Handles None or empty dict
-                return "LLM context is currently empty."
-            return f"Current LLM Context:\n{json.dumps(context, indent=2)}"
-        except Exception as e:
-            logger.error("Error getting LLM context", exc_info=True)
-            raise RuntimeError(f"Error getting LLM context: {e}") from e
+    # Removed _handle_ai_suggest
+    # Removed _handle_llm_budget
+    # Removed _handle_llm_context_update
+    # Removed _handle_llm_context_get
 
     # --- Workflow & Environment Handlers ---
-    def _handle_wf_gen_cwl(self, args: List[str]) -> str:
-        parser = self._create_parser("wf_gen_cwl", self._command_map['wf_gen_cwl']['help'])
+
+    def _handle_wf_gen(self, args: List[str]) -> str:
+        """Handles the /wf_gen command using the configured language."""
+        parser = self._create_parser("wf_gen", self._command_map['wf_gen']['help'])
         parser.add_argument("steps_json", help="Workflow steps definition as JSON string (list or dict)")
         # Add optional output file argument?
-        # parser.add_argument("-o", "--output", help="Optional path to save the generated CWL file")
+        # parser.add_argument("-o", "--output", help="Optional path to save the generated workflow file")
         parsed_args = parser.parse_args(args)
 
         try:
@@ -1636,85 +1334,88 @@ class DayhoffService:
             if not isinstance(steps, (list, dict)):
                  parser.error("Steps JSON must decode to a list or dictionary.")
 
-            # Assuming WorkflowGenerator can be instantiated directly
-            generator = WorkflowGenerator()
-            logger.info("Generating CWL workflow...")
-            cwl_output = generator.generate_cwl(steps) # Assuming this returns the CWL content as string
+            # Get the configured language
+            language = self.config.get_workflow_language()
+            logger.info(f"Generating workflow using configured language: {language}")
 
-            # if parsed_args.output:
-            #     output_path = os.path.abspath(parsed_args.output)
-            #     with open(output_path, 'w') as f:
-            #         f.write(cwl_output)
-            #     logger.info(f"CWL workflow saved to {output_path}")
-            #     return f"Generated CWL workflow saved to: {output_path}"
-            # else:
+            # Instantiate generator and generate workflow
+            generator = WorkflowGenerator()
+            workflow_output = generator.generate_workflow(steps, language)
+
             # Decide how to output: print to console or save to file? Print for now.
-            # Check if the generator actually returned something (it might be a placeholder)
-            if cwl_output is None:
+            if workflow_output is None:
                 # Use a more informative message or potentially raise NotImplementedError
-                return "CWL generation is not yet implemented or returned no output."
-            return f"Generated CWL Workflow:\n---\n{cwl_output}\n---"
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON provided for steps: {e}") from e
-        except ValueError as e: # Catch validation errors
-             raise e
-        except Exception as e:
-            logger.error("Error generating CWL workflow", exc_info=True)
-            raise RuntimeError(f"Error generating CWL workflow: {e}") from e
-
-    def _handle_wf_gen_nextflow(self, args: List[str]) -> str:
-        parser = self._create_parser("wf_gen_nextflow", self._command_map['wf_gen_nextflow']['help'])
-        parser.add_argument("steps_json", help="Workflow steps definition as JSON string (list or dict)")
-        # parser.add_argument("-o", "--output", help="Optional path to save the generated Nextflow script")
-        parsed_args = parser.parse_args(args)
-
-        try:
-            steps = json.loads(parsed_args.steps_json)
-            if not isinstance(steps, (list, dict)):
-                 parser.error("Steps JSON must decode to a list or dictionary.")
-
-            generator = WorkflowGenerator()
-            logger.info("Generating Nextflow workflow...")
-            nf_output = generator.generate_nextflow(steps) # Assuming returns script content
+                return f"Workflow generation for language '{language}' is not yet implemented or returned no output."
 
             # if parsed_args.output:
             #     output_path = os.path.abspath(parsed_args.output)
             #     with open(output_path, 'w') as f:
-            #         f.write(nf_output)
-            #     logger.info(f"Nextflow script saved to {output_path}")
-            #     return f"Generated Nextflow script saved to: {output_path}"
+            #         f.write(workflow_output)
+            #     logger.info(f"Generated {language.upper()} workflow saved to {output_path}")
+            #     return f"Generated {language.upper()} workflow saved to: {output_path}"
             # else:
-            # Check if the generator actually returned something (it might be a placeholder)
-            if nf_output is None:
-                return "Nextflow generation is not yet implemented or returned no output."
-            return f"Generated Nextflow Workflow:\n---\n{nf_output}\n---"
+            return f"Generated {language.upper()} Workflow:\n---\n{workflow_output}\n---"
+
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON provided for steps: {e}") from e
         except ValueError as e: # Catch validation errors
              raise e
         except Exception as e:
-            logger.error("Error generating Nextflow workflow", exc_info=True)
-            raise RuntimeError(f"Error generating Nextflow workflow: {e}") from e
+            logger.error("Error generating workflow", exc_info=True)
+            raise RuntimeError(f"Error generating workflow: {e}") from e
 
-    def _handle_env_get(self, args: List[str]) -> str:
-        parser = self._create_parser("env_get", self._command_map['env_get']['help'])
-        parsed_args = parser.parse_args(args)
+    def _handle_language(self, args: List[str]) -> str:
+        """Handles the /language command to view or set the workflow language."""
+        parser = self._create_parser(
+            "language",
+            self._command_map['language']['help'],
+            add_help=True # Enable default help flag
+        )
+        parser.add_argument("language", nargs='?', help="The workflow language to set (optional).")
+
         try:
-            # Assuming EnvironmentTracker can be instantiated directly
-            env_tracker = EnvironmentTracker()
-            # Accessing protected method - consider making it public if used here
-            # Or add a public method that calls the protected ones.
-            # Let's assume a public 'get_details' method exists or should be added.
-            # details = env_tracker.get_details() # Preferred
-            # For now, use existing protected method if get_details doesn't exist
-            if hasattr(env_tracker, 'get_details'):
-                 details = env_tracker.get_details()
-            elif hasattr(env_tracker, '_get_environment_details'):
-                 details = env_tracker._get_environment_details()
-            else:
-                 return "Environment tracking details method not found."
+            # Use parse_args which will handle --help
+            parsed_args = parser.parse_args(args)
+        except argparse.ArgumentError as e:
+            # Re-raise the error to be caught by execute_command
+            raise e
+        except SystemExit:
+             # Argparse called sys.exit(), likely due to --help.
+             # The help message was already printed by argparse.
+             # Return an empty string to avoid printing None in the REPL.
+             return ""
 
-            return f"Environment Details:\n{json.dumps(details, indent=2)}"
-        except Exception as e:
-            logger.error("Error getting environment details", exc_info=True)
-            raise RuntimeError(f"Error getting environment details: {e}") from e
+        if parsed_args.language is None:
+            # No argument provided, show current setting
+            current_language = self.config.get_workflow_language()
+            return f"Current workflow language: {current_language}"
+        else:
+            # Argument provided, try to set the language
+            requested_language = parsed_args.language.lower() # Normalize to lowercase
+            if requested_language in ALLOWED_WORKFLOW_EXECUTORS:
+                try:
+                    self.config.set('Workflow', 'workflow_language', requested_language)
+                    logger.info(f"Workflow language set to: {requested_language}")
+                    return f"Workflow language set to: {requested_language}"
+                except Exception as e:
+                    logger.error(f"Failed to set workflow language to {requested_language}: {e}", exc_info=True)
+                    raise RuntimeError(f"Failed to save workflow language setting: {e}") from e
+            else:
+                # Invalid language provided, raise error using parser's mechanism
+                allowed_str = ", ".join(ALLOWED_WORKFLOW_EXECUTORS)
+                parser.error(f"Invalid language '{parsed_args.language}'. Allowed languages are: {allowed_str}")
+
+    # Removed _handle_env_get
+    # Removed _handle_ai_suggest
+    # Removed _handle_git_log
+    # Removed _handle_git_record
+    # Removed _handle_fs_find_seq
+    # Removed _handle_fs_detect_format
+    # Removed _handle_hpc_sync_down
+    # Removed _handle_hpc_sync_up
+    # Removed _handle_llm_budget
+    # Removed _handle_llm_context_get
+    # Removed _handle_llm_context_update
+    # Removed _handle_wf_gen_cwl (if they existed)
+    # Removed _handle_wf_gen_nextflow (if they existed)
+
