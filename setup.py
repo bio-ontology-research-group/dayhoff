@@ -15,12 +15,17 @@ setup(
     extras_require={
         # "hpc": [], # paramiko is now a core dependency
         "ai": ["transformers", "langchain"],
-        "workflows": ["cwlgen", "pynextflow"],
+        "workflows": [
+            "cwlgen",
+            "pynextflow",
+            "cwl-runner", # Added cwl-runner dependency
+            ],
         "dev": [ # Added a dev group for convenience
             "transformers",
             "langchain",
             "cwlgen",
             "pynextflow",
+            "cwl-runner", # Added cwl-runner dependency
             # Add linters, formatters, testing tools here if needed
             # "pytest",
             # "flake8",
@@ -33,4 +38,3 @@ setup(
         ],
     },
 )
-
