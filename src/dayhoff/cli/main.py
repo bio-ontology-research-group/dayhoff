@@ -1,61 +1,151 @@
+import click
 import shlex
+import logging
+import sys
+import os
+
+# Import readline for command history and completion (if available)
+try:
+    import readline
+except ImportError:
+    # readline is not available on Windows by default
+    readline = None # type: ignore
+
 from ..service import DayhoffService
 
-# Instantiate the service once
-service = DayhoffService()
+# Configure logging for the CLI
+logger = logging.getLogger(__name__)
+# Example basic config, could be more sophisticated (e.g., file logging)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-def run_repl():
-    """Runs the Dayhoff Read-Eval-Print Loop (REPL)."""
-    print("Welcome to the Dayhoff REPL. Type /help for commands, /quit or /exit to exit.")
+# --- Readline Setup for Autocompletion ---
+
+COMMANDS = [] # Will be populated by DayhoffService instance
+
+def setup_readline(service: DayhoffService):
+    """Configures readline for history and autocompletion."""
+    if readline is None:
+        logger.warning("Readline module not available. Command history and completion disabled.")
+        return
+
+    global COMMANDS
+    # Get available commands from the service, prepend '/'
+    COMMANDS = ['/' + cmd for cmd in service.get_available_commands()]
+
+    # --- History ---
+    histfile = os.path.join(os.path.expanduser("~"), ".dayhoff_history")
+    try:
+        readline.read_history_file(histfile)
+        # default history len is -1 (infinite), which may grow unruly
+        readline.set_history_length(1000)
+    except FileNotFoundError:
+        pass # No history file yet is fine
+    except Exception as e:
+        logger.warning(f"Could not read history file {histfile}: {e}")
+
+    import atexit
+    atexit.register(readline.write_history_file, histfile)
+
+    # --- Autocompletion ---
+    def completer(text, state):
+        """Readline completer function."""
+        line = readline.get_line_buffer()
+        # Only complete at the beginning of the line or after a space if needed later
+        # For now, only complete the command itself (starting with '/')
+        if line.startswith('/'):
+            prefix = line.split(' ')[0] # Get the command part
+            options = [cmd for cmd in COMMANDS if cmd.startswith(prefix)]
+            if state < len(options):
+                return options[state]
+            else:
+                return None
+        return None # No completion otherwise
+
+    readline.set_completer(completer)
+    # Use tab for completion
+    if 'libedit' in readline.__doc__: # Handle macOS libedit differences
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+
+# --- Click CLI Definition ---
+
+@click.group()
+def cli():
+    """Dayhoff Bioinformatics Assistant CLI."""
+    pass
+
+@cli.command()
+def repl():
+    """Start the Dayhoff interactive REPL."""
+    service = DayhoffService()
+    setup_readline(service) # Setup history and completion
+    print("Welcome to the Dayhoff REPL. Type '/help' for commands, '/exit' or Ctrl+D to quit.")
+
+    # --- Diagnostic Print ---
+    # Print the commands loaded by this specific service instance
+    loaded_commands = service.get_available_commands()
+    print(f"[DEBUG] Loaded commands: {sorted(loaded_commands)}")
+    # --- End Diagnostic Print ---
+
+
     while True:
         try:
-            raw_input = input("dayhoff> ")
-            stripped_input = raw_input.strip()
+            # Use input() which now benefits from readline enhancements
+            line = input("dayhoff> ")
+            line = line.strip()
 
-            if not stripped_input:
+            if not line:
                 continue
-
-            if stripped_input.lower() in ["/quit", "/exit"]:
-                print("Exiting Dayhoff REPL.")
+            if line.lower() in ['/exit', '/quit']:
                 break
 
-            if not stripped_input.startswith('/'):
-                print("Error: Commands must start with '/' (e.g., /help, /execute ...)")
+            if not line.startswith('/'):
+                print("Error: Commands must start with '/' (e.g., /help).")
                 continue
 
-            # Use shlex to handle quoted arguments properly
-            parts = shlex.split(stripped_input)
-            command = parts[0][1:]  # Remove leading '/'
+            # Parse command and arguments
+            parts = shlex.split(line)
+            command = parts[0][1:] # Remove leading '/'
             args = parts[1:]
 
-            # --- Argument Parsing Adaptation ---
-            # The original code expected key=value pairs.
-            # The REPL now passes a list of strings (args).
-            # We will pass this list directly. The `execute_command`
-            # method in DayhoffService will need to be able to handle
-            # this list of arguments appropriately for each command.
-            # For simplicity here, we are not converting them back to a dict.
-            # If specific commands *require* key=value, the parsing logic
-            # here or within execute_command would need refinement.
-
-            # Example: If input is "/run_analysis file.txt --threshold 0.5"
-            # command = "run_analysis"
-            # args = ["file.txt", "--threshold", "0.5"]
-
+            # Execute command via service
             result = service.execute_command(command, args)
-            if result is not None:
+            if result: # Print result only if it's not empty/None
                 print(result)
 
-        except EOFError:
-            # Handle Ctrl+D as an exit signal
-            print("\nExiting Dayhoff REPL.")
-            break
         except KeyboardInterrupt:
-            # Handle Ctrl+C gracefully
-            print("\nOperation cancelled by user. Type /quit or /exit to exit.")
+            print("\nInterrupted. Type /exit or Ctrl+D to quit.")
+        except EOFError:
+            print("\nExiting.")
+            break
         except Exception as e:
-            print(f"An error occurred: {e}")
-            # Optionally add more detailed error logging or handling here
+            # Catch unexpected errors in the REPL loop itself
+            logger.error(f"Unexpected error in REPL: {e}", exc_info=True)
+            print(f"An unexpected error occurred: {e}")
 
-if __name__ == "__main__":
-    run_repl()
+
+@cli.command()
+@click.argument('command')
+@click.argument('args', nargs=-1)
+def execute(command, args):
+    """Execute a single Dayhoff command non-interactively."""
+    service = DayhoffService()
+    # Reconstruct args list if needed (Click might handle spaces okay)
+    # For simplicity, assume args are passed correctly by Click
+    result = service.execute_command(command, list(args))
+    if result:
+        print(result)
+
+# Example of how other subcommands could be added
+# @cli.command()
+# @click.option('--path', default='.', help='Path to analyze.')
+# def analyze(path):
+#     """Perform automated analysis (placeholder)."""
+#     click.echo(f"Analyzing path: {path}")
+#     # service = DayhoffService()
+#     # result = service.execute_command("analyze", [path]) ...
+
+if __name__ == '__main__':
+    # This allows running the CLI directly using `python -m dayhoff.cli.main`
+    cli()
