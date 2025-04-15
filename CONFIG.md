@@ -1,6 +1,6 @@
 # Dayhoff Configuration (`dayhoff.cfg`)
 
-This document outlines the configuration settings used by the Dayhoff application. These settings control various aspects of its operation, including logging, data storage, HPC connections, and workflow management.
+This document outlines the configuration settings used by the Dayhoff application. These settings control various aspects of its operation, including logging, data storage, HPC connections, workflow management, and Large Language Model (LLM) interactions.
 
 ## Configuration File
 
@@ -93,6 +93,27 @@ Settings related to the generation and execution specifics of bioinformatics wor
     *   **Allowed Values**: `cromwell`, `miniwdl`, `dxwdl`
     *   **Default**: `cromwell`
 
+### `[LLM]`
+
+Settings for configuring interactions with Large Language Models (LLMs).
+
+*   **`provider`**
+    *   **Description**: Specifies the LLM provider service to use. `openrouter` acts as an aggregator for various models. `openai` refers to OpenAI's official API. `anthropic` refers to Anthropic's API.
+    *   **Allowed Values**: `openrouter`, `openai`, `anthropic` (Note: Client support may vary based on installed packages)
+    *   **Default**: `openrouter`
+
+*   **`api_key`**
+    *   **Description**: The API key required to authenticate with the selected LLM provider. **Security Note**: Storing keys directly in the config file is less secure. Dayhoff will prioritize environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`) if they exist, otherwise it will use this value.
+    *   **Default**: (empty string)
+
+*   **`model`**
+    *   **Description**: The specific identifier for the LLM model to be used (e.g., `gpt-4o`, `claude-3-opus-20240229`, `openrouter/auto`). The available models depend on the selected `provider`. For `openrouter`, `openrouter/auto` selects a recommended model automatically.
+    *   **Default**: `openrouter/auto`
+
+*   **`base_url`**
+    *   **Description**: The base URL for the LLM provider's API endpoint. This is often necessary for providers like OpenRouter or when using self-hosted or proxy setups. If left empty, the default URL for the provider (if known by the client) will be used (e.g., `https://api.openai.com/v1` for openai, `https://openrouter.ai/api/v1` for openrouter).
+    *   **Default**: (empty string)
+
 ## Modifying the Configuration
 
 There are two primary ways to change Dayhoff's configuration:
@@ -101,10 +122,10 @@ There are two primary ways to change Dayhoff's configuration:
 
 2.  **Using the REPL `/config` Command**: Within the Dayhoff interactive REPL, you can manage settings dynamically:
     *   `/config show`: Display all current configuration settings.
-    *   `/config show <section>`: Display settings for a specific section (e.g., `/config show HPC`).
+    *   `/config show <section>`: Display settings for a specific section (e.g., `/config show HPC`, `/config show LLM`).
     *   `/config show ssh`: Display the interpreted SSH settings derived from the `[HPC]` section.
     *   `/config get <section> <key>`: Retrieve the current value of a specific setting (e.g., `/config get DEFAULT log_level`).
-    *   `/config set <section> <key> <value>`: Change the value of a setting. This command also automatically saves the entire configuration file (e.g., `/config set WORKFLOWS default_workflow_type nextflow`).
+    *   `/config set <section> <key> <value>`: Change the value of a setting. This command also automatically saves the entire configuration file (e.g., `/config set WORKFLOWS default_workflow_type nextflow`, `/config set LLM provider openai`).
     *   `/config save`: Manually trigger saving the current configuration state to the file.
 
     Use `/help config` within the REPL for more detailed command usage and examples.
