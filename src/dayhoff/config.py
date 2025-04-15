@@ -1,10 +1,13 @@
 import os
 import configparser
 from pathlib import Path
-from typing import Dict, Any, Optional # Added Optional
+from typing import Dict, Any, Optional, List # Added List
 import logging # Added logging
 
 logger = logging.getLogger(__name__)
+
+# Define allowed workflow executors
+ALLOWED_WORKFLOW_EXECUTORS = ['cwl', 'nextflow', 'snakemake', 'wdl']
 
 class DayhoffConfig:
     """Centralized configuration manager for Dayhoff system"""
@@ -74,6 +77,15 @@ class DayhoffConfig:
         temp_config.set('HPC', '# Path to your SSH known_hosts file (for host key verification)')
         temp_config.set('HPC', '# Default remote directory to change into after login (e.g., /scratch/user)')
         temp_config.set('HPC', '# Base service name used for storing/retrieving passwords via keyring')
+
+        # Add Workflow section
+        temp_config['Workflow'] = {
+            'executor': 'cwl' # Default workflow executor
+        }
+        # Add comments for Workflow section
+        temp_config.set('Workflow', '# --- Workflow Settings ---')
+        temp_config.set('Workflow', '# Preferred workflow executor/language.')
+        temp_config.set('Workflow', f'# Allowed values: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}')
 
 
         # Add other sections if needed
@@ -179,6 +191,46 @@ class DayhoffConfig:
 
 
         return ssh_settings
+
+    def get_section(self, section_name: str) -> Optional[Dict[str, str]]:
+        """Get all key-value pairs for a specific section."""
+        if section_name not in self.config:
+            logger.warning(f"Configuration section [{section_name}] not found.")
+            return None
+        try:
+            # Use self.get() to ensure comments are stripped and defaults are handled (if applicable)
+            section_dict = {key: self.get(section_name, key) for key in self.config[section_name]}
+            logger.debug(f"Retrieved config section [{section_name}]: {section_dict}")
+            return section_dict
+        except Exception as e:
+            logger.error(f"Error reading section [{section_name}] from config: {e}")
+            return None
+
+    def get_all_config(self) -> Dict[str, Dict[str, str]]:
+        """Get all configuration sections and their key-value pairs."""
+        all_config_dict = {}
+        try:
+            for section_name in self.config.sections():
+                section_data = self.get_section(section_name)
+                if section_data is not None:
+                    all_config_dict[section_name] = section_data
+            # Include DEFAULT section if needed (configparser treats it specially)
+            if 'DEFAULT' in self.config:
+                 default_section_data = {key: self.get('DEFAULT', key) for key in self.config['DEFAULT']}
+                 if default_section_data:
+                     # Decide where to put DEFAULT, maybe under its own key?
+                     all_config_dict['DEFAULT'] = default_section_data
+
+            logger.debug("Retrieved all config sections.")
+            return all_config_dict
+        except Exception as e:
+            logger.error(f"Error reading all config sections: {e}")
+            return {} # Return empty dict on error
+
+    def get_available_sections(self) -> List[str]:
+        """Returns a list of available section names."""
+        return self.config.sections()
+
 
 # Global config instance (consider if this is truly needed or if instances should be passed)
 config = DayhoffConfig() # Instantiate the global config object
