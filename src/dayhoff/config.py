@@ -78,14 +78,14 @@ class DayhoffConfig:
         temp_config.set('HPC', '# Default remote directory to change into after login (e.g., /scratch/user)')
         temp_config.set('HPC', '# Base service name used for storing/retrieving passwords via keyring')
 
-        # Add Workflow section
-        temp_config['Workflow'] = {
-            'executor': 'cwl' # Default workflow executor
+        # Add WORKFLOWS section (plural)
+        temp_config['WORKFLOWS'] = {
+            'default_workflow_type': 'cwl' # Default workflow language/executor
         }
-        # Add comments for Workflow section
-        temp_config.set('Workflow', '# --- Workflow Settings ---')
-        temp_config.set('Workflow', '# Preferred workflow executor/language.')
-        temp_config.set('Workflow', f'# Allowed values: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}')
+        # Add comments for WORKFLOWS section
+        temp_config.set('WORKFLOWS', '# --- Workflow Settings ---')
+        temp_config.set('WORKFLOWS', '# Preferred workflow language for generation.') # Updated comment
+        temp_config.set('WORKFLOWS', f'# Allowed values: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}')
 
 
         # Add other sections if needed
@@ -230,6 +230,18 @@ class DayhoffConfig:
     def get_available_sections(self) -> List[str]:
         """Returns a list of available section names."""
         return self.config.sections()
+
+    # --- Updated Method ---
+    def get_workflow_language(self) -> str:
+        """Gets the configured workflow language."""
+        # Read from section WORKFLOWS and key default_workflow_type
+        language = self.get('WORKFLOWS', 'default_workflow_type', default='cwl')
+        # Validate against allowed list, fallback to default if invalid value stored
+        if language not in ALLOWED_WORKFLOW_EXECUTORS:
+            logger.warning(f"Invalid workflow language '{language}' found in config ([WORKFLOWS].default_workflow_type). Falling back to default 'cwl'.")
+            language = 'cwl'
+        return language
+    # --- End Updated Method ---
 
 
 # Global config instance (consider if this is truly needed or if instances should be passed)

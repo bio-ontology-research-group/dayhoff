@@ -16,8 +16,8 @@ from rich.columns import Columns
 from rich.theme import Theme
 
 # --- Core Components ---
-# Import ALLOWED_WORKFLOW_EXECUTORS from config
-from .config import DayhoffConfig, ALLOWED_WORKFLOW_EXECUTORS
+# Import the GLOBAL config instance and ALLOWED_WORKFLOW_EXECUTORS
+from .config import config, ALLOWED_WORKFLOW_EXECUTORS # Changed import
 # Removed GitTracker import as /git_* commands are removed
 # from .git_tracking import GitTracker, Event
 
@@ -142,7 +142,8 @@ class DayhoffService:
         # Instantiate core/persistent services
         # Removed GitTracker instantiation
         # self.tracker = GitTracker()
-        self.config = DayhoffConfig() # Instantiates global config object
+        # Use the globally imported config instance
+        self.config = config # Changed this line
         # Instantiate components needed by handlers
         self.local_fs = LocalFileSystem()
         self.file_inspector = FileInspector(self.local_fs) # FileInspector needs a filesystem
@@ -174,8 +175,8 @@ class DayhoffService:
                       set <section> <key> <value>   : Set a config value (and save). Type '/config set' for examples.
                       save                          : Manually save the current configuration.
                       show [section|ssh]            : Show a specific section, 'ssh' (HPC config), or all config.
-                    Note: Use '/language' command to view/set the preferred workflow language ([Workflow] workflow_language).
-                    Allowed languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}""")
+                    Note: Use '/language' command to view/set the preferred workflow language ([WORKFLOWS] default_workflow_type).
+                    Allowed languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}""") # Updated section/key
             },
             # --- File System ---
             # Removed /fs_find_seq
@@ -284,6 +285,7 @@ class DayhoffService:
     def _handle_help(self, args: List[str]) -> str:
         if not args:
             # General help
+            # Now correctly calls the method added to DayhoffConfig
             current_language = self.config.get_workflow_language() # Get current language
             help_lines = [
                 f"Dayhoff REPL - Type /<command> [arguments] to execute.",
@@ -480,7 +482,7 @@ class DayhoffService:
         """Handles the /config command with subparsers."""
         parser = self._create_parser(
             "config",
-            self._command_map['config']['help'],
+            self._command_map['config']['help'], # Help text already updated via _build_command_map
             add_help=True # Enable default help for the main command
         )
         subparsers = parser.add_subparsers(dest="subcommand", title="Subcommands",
@@ -509,9 +511,9 @@ class DayhoffService:
                                            Examples:
                                              /config set HPC username myuser
                                              /config set DEFAULT log_level DEBUG
-                                             /config set Workflow workflow_language nextflow
+                                             /config set WORKFLOWS default_workflow_type nextflow
                                            Allowed workflow languages: {", ".join(ALLOWED_WORKFLOW_EXECUTORS)}
-                                           """),
+                                           """), # Updated example section/key
                                            formatter_class=argparse.RawDescriptionHelpFormatter,
                                            add_help=False) # Use custom error handler
         parser_set.add_argument("section", help="Configuration section name")
@@ -541,7 +543,7 @@ class DayhoffService:
         parser_show = subparsers.add_parser("show", help="Show a specific section, 'ssh' (HPC config), or all config.",
                                             description="Show a specific section, 'ssh' (HPC config), or all config.",
                                             add_help=False) # Use custom error handler
-        parser_show.add_argument("section", nargs='?', default=None, help="Section name to show (e.g., HPC, Workflow, ssh) or omit for all.")
+        parser_show.add_argument("section", nargs='?', default=None, help="Section name to show (e.g., HPC, WORKFLOWS, ssh) or omit for all.") # Updated example
         # Override error handler for subparser
         def show_error(message):
             usage = parser_show.format_usage()
@@ -583,6 +585,7 @@ class DayhoffService:
         # --- Execute subcommand logic ---
         try:
             if parsed_args.subcommand == "get":
+                # Now uses self.config which refers to the global config instance
                 value = self.config.get(parsed_args.section, parsed_args.key, parsed_args.default)
                 # Nicer output for dicts/lists (though config values are usually strings)
                 if isinstance(value, (dict, list)):
@@ -592,16 +595,19 @@ class DayhoffService:
 
             elif parsed_args.subcommand == "set":
                 # Special handling for workflow language to validate choices
-                if parsed_args.section == 'Workflow' and parsed_args.key == 'workflow_language':
+                # Use correct section/key
+                if parsed_args.section == 'WORKFLOWS' and parsed_args.key == 'default_workflow_type':
                     if parsed_args.value not in ALLOWED_WORKFLOW_EXECUTORS:
                         allowed_str = ", ".join(ALLOWED_WORKFLOW_EXECUTORS)
-                        parser_set.error(f"Invalid value '{parsed_args.value}' for Workflow.workflow_language. Allowed values: {allowed_str}")
+                        parser_set.error(f"Invalid value '{parsed_args.value}' for WORKFLOWS.default_workflow_type. Allowed values: {allowed_str}")
                     # Value is valid, proceed
+                # Now uses self.config which refers to the global config instance
                 self.config.set(parsed_args.section, parsed_args.key, parsed_args.value)
                 # config.set already logs and saves
                 return f"Config [{parsed_args.section}].{parsed_args.key} set to '{parsed_args.value}' and saved."
 
             elif parsed_args.subcommand == "save":
+                # Now uses self.config which refers to the global config instance
                 self.config.save_config()
                 config_path = self.config.config_path # Use the stored path
                 return f"Configuration saved successfully to {config_path}."
@@ -610,18 +616,21 @@ class DayhoffService:
                 section_name = parsed_args.section
                 if section_name is None:
                     # Show all config
+                    # Now uses self.config which refers to the global config instance
                     config_data = self.config.get_all_config()
                     if not config_data:
                         return "Configuration is empty or could not be read."
                     return f"Current Configuration:\n{json.dumps(config_data, indent=2)}"
                 elif section_name.lower() == 'ssh':
                     # Special case for SSH config
+                    # Now uses self.config which refers to the global config instance
                     config_data = self.config.get_ssh_config()
                     if not config_data:
                         return "SSH (HPC) configuration section not found or empty."
                     return f"SSH Configuration (Section: HPC):\n{json.dumps(config_data, indent=2)}"
                 else:
                     # Show specific section
+                    # Now uses self.config which refers to the global config instance
                     config_data = self.config.get_section(section_name)
                     if config_data is None:
                         # get_section already logged a warning
@@ -710,6 +719,7 @@ class DayhoffService:
             ConnectionError: If SSH config is missing or if connect_now=True
                              and the connection fails.
         """
+        # Now uses self.config which refers to the global config instance
         ssh_config = self.config.get_ssh_config()
         if not ssh_config or not ssh_config.get('host'): # Also check if host is set
             raise ConnectionError("HPC host configuration missing. Use '/config set HPC host <hostname>' and potentially other HPC settings.")
@@ -1293,19 +1303,25 @@ class DayhoffService:
         parsed_args = parser.parse_args(args)
 
         try:
-            # CredentialManager uses config internally to get the system name
-            cred_manager = CredentialManager() # No args needed if it reads from config
+            # CredentialManager likely uses the global config instance internally
+            # or instantiates its own DayhoffConfig. Assuming it works correctly
+            # without explicit config passing for now.
+            cred_manager = CredentialManager()
 
             # Retrieve password using the username and the system_name from config/default
+            # Assuming cred_manager gets the system_name correctly.
             password = cred_manager.get_password(username=parsed_args.username)
+
+            # Get system name for logging/message (assuming cred_manager has this attribute or method)
+            system_name = getattr(cred_manager, 'system_name', 'dayhoff_hpc') # Default if not found
 
             if password:
                  # Security: Do NOT return the password itself to the REPL!
-                 logger.info(f"Password found for user '{parsed_args.username}' (system: {cred_manager.system_name}) in keyring.")
-                 return f"Password found for user '{parsed_args.username}' (system: {cred_manager.system_name}) in system keyring."
+                 logger.info(f"Password found for user '{parsed_args.username}' (system: {system_name}) in keyring.")
+                 return f"Password found for user '{parsed_args.username}' (system: {system_name}) in system keyring."
             else:
-                 logger.info(f"No stored password found for user '{parsed_args.username}' (system: {cred_manager.system_name}) in keyring.")
-                 return f"No stored password found for user '{parsed_args.username}' (system: {cred_manager.system_name}) in system keyring."
+                 logger.info(f"No stored password found for user '{parsed_args.username}' (system: {system_name}) in keyring.")
+                 return f"No stored password found for user '{parsed_args.username}' (system: {system_name}) in system keyring."
         except Exception as e:
             # Catch potential keyring backend errors (e.g., NoKeyringError)
             logger.error(f"Error retrieving credentials for {parsed_args.username}", exc_info=True)
@@ -1334,7 +1350,7 @@ class DayhoffService:
             if not isinstance(steps, (list, dict)):
                  parser.error("Steps JSON must decode to a list or dictionary.")
 
-            # Get the configured language
+            # Get the configured language - now calls the correct method via self.config
             language = self.config.get_workflow_language()
             logger.info(f"Generating workflow using configured language: {language}")
 
@@ -1387,6 +1403,7 @@ class DayhoffService:
 
         if parsed_args.language is None:
             # No argument provided, show current setting
+            # Now calls the correct method via self.config
             current_language = self.config.get_workflow_language()
             return f"Current workflow language: {current_language}"
         else:
@@ -1394,7 +1411,8 @@ class DayhoffService:
             requested_language = parsed_args.language.lower() # Normalize to lowercase
             if requested_language in ALLOWED_WORKFLOW_EXECUTORS:
                 try:
-                    self.config.set('Workflow', 'workflow_language', requested_language)
+                    # Use the correct section/key when setting via self.config
+                    self.config.set('WORKFLOWS', 'default_workflow_type', requested_language)
                     logger.info(f"Workflow language set to: {requested_language}")
                     return f"Workflow language set to: {requested_language}"
                 except Exception as e:
