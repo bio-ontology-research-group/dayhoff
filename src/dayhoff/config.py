@@ -130,6 +130,6 @@ class DayhoffConfig:
         return ssh_settings
 
 # Global config instance (consider if this is truly needed or if instances should be passed)
-# config = DayhoffConfig()
+config = DayhoffConfig()
 # Commenting out global instance for now - better to instantiate where needed
 # to ensure latest config is loaded if file changes during runtime.
