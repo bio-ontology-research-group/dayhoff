@@ -56,6 +56,9 @@ class DayhoffService:
         # Instantiate components needed by handlers
         self.local_fs = LocalFileSystem()
         self.file_inspector = FileInspector(self.local_fs) # FileInspector needs a filesystem
+        # --- Added State ---
+        self.active_ssh_manager: Optional[SSHManager] = None
+        # --- End Added State ---
         logger.info("DayhoffService initialized.")
         # Lazily instantiate others as needed within command handlers
         # or instantiate here if frequently used and lightweight.
@@ -84,9 +87,12 @@ class DayhoffService:
             "git_record": {"handler": self._handle_git_record, "help": "Record a custom event. Usage: /git_record <event_type> <metadata_json> [files_json]"},
             "git_log": {"handler": self._handle_git_log, "help": "Show git event log. Usage: /git_log [limit=10]"},
             # --- HPC Bridge ---
+            "hpc_connect": {"handler": self._handle_hpc_connect, "help": "Establish a persistent SSH connection to the HPC. Usage: /hpc_connect"},
+            "hpc_disconnect": {"handler": self._handle_hpc_disconnect, "help": "Close the persistent SSH connection to the HPC. Usage: /hpc_disconnect"},
+            "hpc_run": {"handler": self._handle_hpc_run, "help": "Execute a command on the HPC using the active connection. Usage: /hpc_run <command_string>"},
             "hpc_sync_up": {"handler": self._handle_hpc_sync_up, "help": "Upload file(s) to HPC. Usage: /hpc_sync_up <local_path_or_glob> <remote_dir>"},
             "hpc_sync_down": {"handler": self._handle_hpc_sync_down, "help": "Download file(s) from HPC. Usage: /hpc_sync_down <remote_path_or_glob> <local_dir>"},
-            "hpc_ssh_cmd": {"handler": self._handle_hpc_ssh_cmd, "help": "Execute a command via SSH. Usage: /hpc_ssh_cmd <command_string>"},
+            # "hpc_ssh_cmd": {"handler": self._handle_hpc_ssh_cmd, "help": "Execute a command via SSH. Usage: /hpc_ssh_cmd <command_string>"}, # Removed
             "hpc_slurm_submit": {"handler": self._handle_hpc_slurm_submit, "help": "Submit a Slurm job. Usage: /hpc_slurm_submit <script_path> [options_json]"},
             # Updated help text for hpc_slurm_status
             "hpc_slurm_status": {
@@ -126,8 +132,8 @@ class DayhoffService:
             try:
                 # Record the event before execution
                 # Consider adding more context like current working directory?
-                # Skip recording for /test command itself?
-                if command != 'test':
+                # Skip recording for /test, /hpc_connect, /hpc_disconnect?
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log']:
                     self.tracker.record_event(
                         event_type="command_executed",
                         metadata={
@@ -164,7 +170,7 @@ class DayhoffService:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True)
                 # Log the exception details?
                 # Skip recording failure for /test command itself?
-                if command != 'test':
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log']:
                     self.tracker.record_event(
                         event_type="command_failed",
                         metadata={
@@ -529,7 +535,9 @@ class DayhoffService:
 
     # --- HPC Bridge Handlers ---
     def _get_ssh_manager(self) -> SSHManager:
-        """Helper to get an initialized SSHManager."""
+        """Helper to get an initialized SSHManager (temporary connection)."""
+        # This helper now primarily serves commands that need a *temporary* connection.
+        # Commands using the persistent connection should check self.active_ssh_manager directly.
         ssh_config = self.config.get_ssh_config()
         if not ssh_config:
             # Raise ConnectionError for the main handler
@@ -538,22 +546,23 @@ class DayhoffService:
             # Pass the config dictionary directly
             return SSHManager(ssh_config=ssh_config)
         except Exception as e:
-             logger.error(f"Failed to initialize SSHManager: {e}", exc_info=True)
-             raise ConnectionError(f"Failed to initialize SSH connection: {e}") from e
+             logger.error(f"Failed to initialize temporary SSHManager: {e}", exc_info=True)
+             raise ConnectionError(f"Failed to initialize temporary SSH connection: {e}") from e
 
 
     def _get_file_synchronizer(self) -> FileSynchronizer:
         """Helper to get an initialized FileSynchronizer."""
-        # FileSynchronizer likely needs an SSHManager instance or config
-        ssh_manager = self._get_ssh_manager() # Reuse SSH manager logic
-        # Assuming FileSynchronizer takes the manager instance
+        # Decide if this should use the active connection or a temporary one.
+        # For now, let's keep it using a temporary one for simplicity.
+        # If self.active_ssh_manager:
+        #     logger.debug("Using active SSH connection for file synchronizer.")
+        #     ssh_manager = self.active_ssh_manager
+        # else:
+        logger.debug("Creating temporary SSH connection for file synchronizer.")
+        ssh_manager = self._get_ssh_manager() # Creates a temporary connection
+
         try:
             return FileSynchronizer(ssh_manager=ssh_manager)
-            # Or if it takes config:
-            # ssh_config = self.config.get_ssh_config()
-            # if not ssh_config:
-            #     raise ConnectionError("SSH configuration not found.")
-            # return FileSynchronizer(ssh_config=ssh_config)
         except Exception as e:
              logger.error(f"Failed to initialize FileSynchronizer: {e}", exc_info=True)
              # Raise a connection error as it likely stems from SSH setup
@@ -562,13 +571,128 @@ class DayhoffService:
 
     def _get_slurm_manager(self) -> SlurmManager:
         """Helper to get an initialized SlurmManager."""
-        ssh_manager = self._get_ssh_manager() # Reuse SSH manager logic
+        # Decide if this should use the active connection or a temporary one.
+        # For now, let's keep it using a temporary one for simplicity.
+        # If self.active_ssh_manager:
+        #     logger.debug("Using active SSH connection for Slurm manager.")
+        #     ssh_manager = self.active_ssh_manager
+        # else:
+        logger.debug("Creating temporary SSH connection for Slurm manager.")
+        ssh_manager = self._get_ssh_manager() # Creates a temporary connection
+
         try:
             # Pass the initialized SSHManager instance
             return SlurmManager(ssh_manager=ssh_manager)
         except Exception as e:
              logger.error(f"Failed to initialize SlurmManager: {e}", exc_info=True)
              raise ConnectionError(f"Failed to initialize Slurm manager: {e}") from e
+
+    # --- New HPC Connection Handlers ---
+    def _handle_hpc_connect(self, args: List[str]) -> str:
+        """Establishes and stores a persistent SSH connection."""
+        parser = self._create_parser("hpc_connect", self._command_map['hpc_connect']['help'])
+        parsed_args = parser.parse_args(args) # No arguments expected
+
+        if self.active_ssh_manager:
+            # Optionally, try a simple command to see if it's still alive?
+            try:
+                # Test with a simple, non-intrusive command
+                test_cmd = "echo 'Dayhoff connection active'"
+                logger.debug(f"Testing existing SSH connection with: {test_cmd}")
+                self.active_ssh_manager.execute_command(test_cmd, timeout=10)
+                host = self.active_ssh_manager.host # Assuming host attribute exists
+                return f"Already connected to HPC host: {host}. Use /hpc_disconnect first if you want to reconnect."
+            except Exception as e:
+                logger.warning(f"Existing SSH connection seems stale ({e}), attempting to reconnect.")
+                try:
+                    self.active_ssh_manager.close() # Attempt to close the old one
+                except Exception:
+                    logger.debug("Error closing stale SSH connection, proceeding anyway.")
+                self.active_ssh_manager = None
+
+        logger.info("Attempting to establish persistent SSH connection...")
+        try:
+            # Use the same logic as _get_ssh_manager but store the result
+            ssh_config = self.config.get_ssh_config()
+            if not ssh_config:
+                raise ConnectionError("SSH configuration not found. Use /config_set or edit config file.")
+
+            ssh_manager = SSHManager(ssh_config=ssh_config)
+            # Verify connection by running a simple command
+            test_cmd = "hostname"
+            logger.debug(f"Verifying SSH connection with command: {test_cmd}")
+            hostname = ssh_manager.execute_command(test_cmd, timeout=15).strip() # Add timeout
+            logger.info(f"SSH connection verified. Remote hostname: {hostname}")
+
+            self.active_ssh_manager = ssh_manager
+            return f"Successfully connected to HPC host: {hostname} (user: {ssh_manager.username})." # Assuming username attribute
+
+        except ConnectionError as e:
+            # Let main handler report this
+            self.active_ssh_manager = None # Ensure state is clean on failure
+            raise e
+        except Exception as e:
+            logger.error(f"Failed to establish persistent SSH connection: {e}", exc_info=True)
+            self.active_ssh_manager = None # Ensure state is clean on failure
+            # Raise a ConnectionError for consistent handling
+            raise ConnectionError(f"Failed to establish SSH connection: {e}") from e
+
+    def _handle_hpc_disconnect(self, args: List[str]) -> str:
+        """Closes the persistent SSH connection."""
+        parser = self._create_parser("hpc_disconnect", self._command_map['hpc_disconnect']['help'])
+        parsed_args = parser.parse_args(args) # No arguments expected
+
+        if not self.active_ssh_manager:
+            return "No active HPC connection to disconnect."
+
+        logger.info("Disconnecting persistent SSH connection...")
+        try:
+            # Assuming SSHManager has a close() method
+            if hasattr(self.active_ssh_manager, 'close') and callable(self.active_ssh_manager.close):
+                self.active_ssh_manager.close()
+            else:
+                logger.warning("SSHManager does not have a 'close' method. Cannot explicitly close connection.")
+            host = getattr(self.active_ssh_manager, 'host', 'unknown') # Get host if available
+            self.active_ssh_manager = None
+            return f"Successfully disconnected from HPC host: {host}."
+        except Exception as e:
+            logger.error(f"Error during SSH disconnection: {e}", exc_info=True)
+            # Still clear the manager instance, but report error
+            self.active_ssh_manager = None
+            # Raise runtime error to be caught by main handler
+            raise RuntimeError(f"Error closing SSH connection: {e}") from e
+
+    def _handle_hpc_run(self, args: List[str]) -> str:
+        """Executes a command using the active persistent SSH connection."""
+        parser = self._create_parser("hpc_run", self._command_map['hpc_run']['help'])
+        parser.add_argument("command", nargs='+', help="The command string to execute remotely")
+        parsed_args = parser.parse_args(args) # Will raise error if no command provided
+
+        if not self.active_ssh_manager:
+            # Raise ConnectionError to be caught by main handler
+            raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
+
+        command_string = " ".join(parsed_args.command) # Rejoin args into the command
+
+        try:
+            logger.info(f"Executing command via active SSH connection: {command_string}")
+            output = self.active_ssh_manager.execute_command(command_string)
+            # Return output, potentially trimming whitespace
+            return f"Output:\n---\n{output.strip()}\n---"
+        except ConnectionError as e:
+            # Connection might have dropped since /hpc_connect
+            logger.error(f"Connection error during /hpc_run: {e}", exc_info=True)
+            # Clear the potentially dead connection
+            self.active_ssh_manager = None
+            # Re-raise the error
+            raise ConnectionError(f"Connection error during command execution: {e}. Connection closed.") from e
+        except Exception as e:
+            logger.error(f"Error executing command via active SSH connection: {e}", exc_info=True)
+            # Should we disconnect on any error? Maybe not, could be command syntax error.
+            # Let the main handler report this as a runtime error.
+            raise RuntimeError(f"Error executing remote command: {e}") from e
+
+    # --- End New HPC Connection Handlers ---
 
 
     def _handle_hpc_sync_up(self, args: List[str]) -> str:
@@ -578,6 +702,7 @@ class DayhoffService:
         parsed_args = parser.parse_args(args)
 
         try:
+            # Uses temporary connection via _get_file_synchronizer()
             synchronizer = self._get_file_synchronizer()
 
             # FileSynchronizer.upload_files expects List[str], handle potential glob
@@ -593,6 +718,13 @@ class DayhoffService:
             # Assuming upload_files returns bool or raises error
             success = synchronizer.upload_files(local_paths, parsed_args.remote_dir)
             if success: # Or if no exception was raised
+                # Close the temporary connection if the synchronizer holds it
+                if hasattr(synchronizer, 'ssh_manager') and hasattr(synchronizer.ssh_manager, 'close'):
+                    try:
+                        synchronizer.ssh_manager.close()
+                        logger.debug("Closed temporary SSH connection for sync up.")
+                    except Exception as close_err:
+                        logger.warning(f"Error closing temporary SSH connection after sync up: {close_err}")
                 return f"Successfully uploaded {len(local_paths)} file(s) matching '{parsed_args.local_path}' to {parsed_args.remote_dir}."
             else:
                 # If upload_files returns False without raising error
@@ -612,6 +744,7 @@ class DayhoffService:
         parsed_args = parser.parse_args(args)
 
         try:
+            # Uses temporary connection via _get_file_synchronizer()
             synchronizer = self._get_file_synchronizer()
 
             # download_files expects List[str]. Handling remote globs requires executing
@@ -627,6 +760,13 @@ class DayhoffService:
 
             success = synchronizer.download_files(remote_paths, parsed_args.local_dir)
             if success: # Or if no exception raised
+                 # Close the temporary connection if the synchronizer holds it
+                 if hasattr(synchronizer, 'ssh_manager') and hasattr(synchronizer.ssh_manager, 'close'):
+                     try:
+                         synchronizer.ssh_manager.close()
+                         logger.debug("Closed temporary SSH connection for sync down.")
+                     except Exception as close_err:
+                         logger.warning(f"Error closing temporary SSH connection after sync down: {close_err}")
                  # We don't know exactly how many files were downloaded if it was a glob
                  return f"Successfully downloaded files matching '{parsed_args.remote_path}' to {parsed_args.local_dir}."
             else:
@@ -637,24 +777,28 @@ class DayhoffService:
             logger.error("Error during HPC download", exc_info=True)
             raise RuntimeError(f"Error during download: {e}") from e
 
-    def _handle_hpc_ssh_cmd(self, args: List[str]) -> str:
-        parser = self._create_parser("hpc_ssh_cmd", self._command_map['hpc_ssh_cmd']['help'])
-        parser.add_argument("command", nargs='+', help="The command string to execute remotely")
-        parsed_args = parser.parse_args(args) # Will raise error if no command provided
-
-        command_string = " ".join(parsed_args.command) # Rejoin args into the command
-
-        try:
-            ssh_manager = self._get_ssh_manager()
-            logger.info(f"Executing SSH command: {command_string}")
-            output = ssh_manager.execute_command(command_string)
-            # Return output, potentially trimming whitespace
-            return f"SSH command output:\n---\n{output.strip()}\n---"
-        except ConnectionError as e:
-            raise e
-        except Exception as e:
-            logger.error("Error executing SSH command", exc_info=True)
-            raise RuntimeError(f"Error executing SSH command: {e}") from e
+    # --- Removed Handler ---
+    # def _handle_hpc_ssh_cmd(self, args: List[str]) -> str:
+    #     parser = self._create_parser("hpc_ssh_cmd", self._command_map['hpc_ssh_cmd']['help'])
+    #     parser.add_argument("command", nargs='+', help="The command string to execute remotely")
+    #     parsed_args = parser.parse_args(args) # Will raise error if no command provided
+    #
+    #     command_string = " ".join(parsed_args.command) # Rejoin args into the command
+    #
+    #     try:
+    #         ssh_manager = self._get_ssh_manager() # Uses temporary connection
+    #         logger.info(f"Executing SSH command: {command_string}")
+    #         output = ssh_manager.execute_command(command_string)
+    #         # Close temporary connection
+    #         if hasattr(ssh_manager, 'close'): ssh_manager.close()
+    #         # Return output, potentially trimming whitespace
+    #         return f"SSH command output:\n---\n{output.strip()}\n---"
+    #     except ConnectionError as e:
+    #         raise e
+    #     except Exception as e:
+    #         logger.error("Error executing SSH command", exc_info=True)
+    #         raise RuntimeError(f"Error executing SSH command: {e}") from e
+    # --- End Removed Handler ---
 
     def _handle_hpc_slurm_submit(self, args: List[str]) -> str:
         parser = self._create_parser("hpc_slurm_submit", self._command_map['hpc_slurm_submit']['help'])
@@ -662,7 +806,9 @@ class DayhoffService:
         parser.add_argument("options_json", nargs='?', default='{}', help="Optional Slurm options as JSON string (e.g., '{\"--nodes\": 1, \"--time\": \"01:00:00\"}')")
         parsed_args = parser.parse_args(args)
 
+        slurm_manager = None # Define outside try block for finally
         try:
+            # Uses temporary connection via _get_slurm_manager()
             slurm_manager = self._get_slurm_manager()
 
             options = json.loads(parsed_args.options_json)
@@ -690,6 +836,15 @@ class DayhoffService:
         except Exception as e:
             logger.error("Error submitting Slurm job", exc_info=True)
             raise RuntimeError(f"Error submitting Slurm job: {e}") from e
+        finally:
+            # Ensure temporary connection is closed
+            if slurm_manager and hasattr(slurm_manager, 'ssh') and hasattr(slurm_manager.ssh, 'close'):
+                 try:
+                     slurm_manager.ssh.close()
+                     logger.debug("Closed temporary SSH connection for Slurm submit.")
+                 except Exception as close_err:
+                     logger.warning(f"Error closing temporary SSH connection after Slurm submit: {close_err}")
+
 
     def _handle_hpc_slurm_status(self, args: List[str]) -> str:
         """Handles the /hpc_slurm_status command with multiple query options."""
@@ -714,8 +869,9 @@ class DayhoffService:
             query_user = True
             logger.info("No scope specified for /hpc_slurm_status, defaulting to --user.")
 
-
+        slurm_manager = None # Define outside try block for finally
         try:
+            # Uses temporary connection via _get_slurm_manager()
             slurm_manager = self._get_slurm_manager()
             logger.info(f"Getting Slurm status info (job_id={job_id}, user={query_user}, all={query_all}, summary={parsed_args.waiting_summary})")
 
@@ -785,6 +941,14 @@ class DayhoffService:
         except Exception as e:
             logger.error(f"Error getting Slurm job status", exc_info=True)
             raise RuntimeError(f"Error getting Slurm job status: {e}") from e
+        finally:
+             # Ensure temporary connection is closed
+             if slurm_manager and hasattr(slurm_manager, 'ssh') and hasattr(slurm_manager.ssh, 'close'):
+                 try:
+                     slurm_manager.ssh.close()
+                     logger.debug("Closed temporary SSH connection for Slurm status.")
+                 except Exception as close_err:
+                     logger.warning(f"Error closing temporary SSH connection after Slurm status: {close_err}")
 
 
     def _handle_hpc_cred_get(self, args: List[str]) -> str:
