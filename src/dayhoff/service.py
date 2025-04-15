@@ -11,10 +11,9 @@ from .git_tracking import GitTracker, Event
 # --- File System ---
 # This import should now work correctly
 from .fs import BioDataExplorer
-# Assuming BaseFileSystem and implementations might be needed later
-# from .fs.local import LocalFileSystem
-# from .fs.stats import FileStats
-# from .fs.streaming import FileStreamer
+# Import specific FS components needed for new commands
+from .fs.local import LocalFileSystem
+from .fs.file_inspector import FileInspector
 
 # --- HPC Bridge ---
 # Import necessary components as needed by commands
@@ -51,6 +50,9 @@ class DayhoffService:
         # Instantiate core/persistent services
         self.tracker = GitTracker()
         self.config = DayhoffConfig()
+        # Instantiate components needed by handlers
+        self.local_fs = LocalFileSystem()
+        self.file_inspector = FileInspector(self.local_fs) # FileInspector needs a filesystem
         logger.info("DayhoffService initialized.")
         # Lazily instantiate others as needed within command handlers
         # or instantiate here if frequently used and lightweight.
@@ -62,17 +64,22 @@ class DayhoffService:
         # Structure: command_name: {'handler': self._handle_command_xyz, 'help': 'Help text...'}
         return {
             "help": {"handler": self._handle_help, "help": "Show help for commands. Usage: /help [command_name]"},
+            # --- Test Command ---
+            # Renamed from test_command to test
+            "test": {"handler": self._handle_test, "help": "A simple test command. Usage: /test [--param key=value]"},
             # --- Config ---
             "config_get": {"handler": self._handle_config_get, "help": "Get a config value. Usage: /config_get <section> <key> [default_value]"},
             "config_ssh": {"handler": self._handle_config_ssh, "help": "Get SSH configuration. Usage: /config_ssh"},
             "config_save": {"handler": self._handle_config_save, "help": "Save current configuration. Usage: /config_save"},
             # --- File System ---
             "fs_find_seq": {"handler": self._handle_fs_find_seq, "help": "Find sequence files in a directory. Usage: /fs_find_seq [root_path]"},
+            "fs_head": {"handler": self._handle_fs_head, "help": "Show the first N lines of a local file. Usage: /fs_head <file_path> [num_lines=10]"},
+            "fs_detect_format": {"handler": self._handle_fs_detect_format, "help": "Detect the format of a local file. Usage: /fs_detect_format <file_path>"},
             # "fs_stats": {"handler": self._handle_fs_stats, "help": "Get file statistics. Usage: /fs_stats <filepath>"}, # Needs FileStats class
             # "fs_cmd": {"handler": self._handle_fs_cmd, "help": "Run a local shell command. Usage: /fs_cmd <command_string>"}, # Needs LocalFileSystem class
             # --- Git Tracking ---
             "git_record": {"handler": self._handle_git_record, "help": "Record a custom event. Usage: /git_record <event_type> <metadata_json> [files_json]"},
-            # "git_log": {"handler": self._handle_git_log, "help": "Show git event log (placeholder). Usage: /git_log"}, # Needs implementation in GitTracker
+            "git_log": {"handler": self._handle_git_log, "help": "Show git event log. Usage: /git_log [limit=10]"},
             # --- HPC Bridge ---
             "hpc_sync_up": {"handler": self._handle_hpc_sync_up, "help": "Upload file(s) to HPC. Usage: /hpc_sync_up <local_path_or_glob> <remote_dir>"},
             "hpc_sync_down": {"handler": self._handle_hpc_sync_down, "help": "Download file(s) from HPC. Usage: /hpc_sync_down <remote_path_or_glob> <local_dir>"},
@@ -90,6 +97,12 @@ class DayhoffService:
             "wf_gen_nextflow": {"handler": self._handle_wf_gen_nextflow, "help": "Generate Nextflow workflow. Usage: /wf_gen_nextflow <steps_json>"},
             "env_get": {"handler": self._handle_env_get, "help": "Get environment details. Usage: /env_get"},
         }
+
+    # --- Added Method ---
+    def get_available_commands(self) -> List[str]:
+        """Returns a list of available command names (without the leading '/')."""
+        return list(self._command_map.keys())
+    # --- End Added Method ---
 
     def execute_command(self, command: str, args: List[str]) -> Any:
         """Execute a command and track it in git"""
@@ -117,6 +130,9 @@ class DayhoffService:
                  logger.warning(f"Argument error for /{command}: {e}")
                  # Provide specific usage help on argument error
                  return f"Argument Error: {e}\nUsage: {command_info.get('help', 'No help available.')}"
+            except FileNotFoundError as e: # Catch file not found specifically
+                 logger.warning(f"File not found during /{command}: {e}")
+                 return f"Error: File not found - {e}"
             except Exception as e:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True)
                 # Log the exception details?
@@ -169,6 +185,33 @@ class DayhoffService:
             raise argparse.ArgumentError(None, f"Invalid arguments for /{prog}: {message}")
         parser.error = error
         return parser
+
+    # --- Test Command Handler ---
+    # Renamed from _handle_test_command to _handle_test
+    def _handle_test(self, args: List[str]) -> str:
+        """Handles the simple /test command."""
+        # Updated parser prog name
+        parser = self._create_parser("test", "A simple test command.")
+        # Example of accepting arbitrary key=value pairs
+        parser.add_argument('--param', action='append', help="Parameters in key=value format")
+        parsed_args = parser.parse_args(args)
+
+        params = {}
+        if parsed_args.param:
+            for p in parsed_args.param:
+                if '=' in p:
+                    key, value = p.split('=', 1)
+                    params[key] = value
+                else:
+                    # Handle case where value is not provided, maybe treat as flag or error
+                    params[p] = True # Or raise argparse.ArgumentError
+
+        # Construct the output message based on click test
+        # Updated output message to reflect command name
+        output = f"Executed /test command with params: {params}"
+        logger.info(f"Test command executed with params: {params}")
+        return output
+
 
     # --- Config Handlers ---
     def _handle_config_get(self, args: List[str]) -> Any:
@@ -228,6 +271,50 @@ class DayhoffService:
             logger.error(f"Error finding sequence files in {parsed_args.root_path}", exc_info=True)
             return f"Error finding sequence files: {e}"
 
+    def _handle_fs_head(self, args: List[str]) -> str:
+        """Handles the /fs_head command."""
+        parser = self._create_parser("fs_head", "Show the first N lines of a local file.")
+        parser.add_argument("file_path", help="Path to the local file")
+        parser.add_argument("num_lines", type=int, nargs='?', default=10, help="Number of lines to show (default: 10)")
+        parsed_args = parser.parse_args(args)
+
+        if parsed_args.num_lines <= 0:
+            raise argparse.ArgumentError(None, "Number of lines must be positive.")
+
+        try:
+            # Use the FileInspector instance
+            lines = list(self.file_inspector.head(parsed_args.file_path, parsed_args.num_lines))
+            if not lines:
+                return f"File is empty or could not be read: {parsed_args.file_path}"
+            return f"First {len(lines)} lines of '{parsed_args.file_path}':\n---\n" + "\n".join(lines) + "\n---"
+        except FileNotFoundError:
+             # Re-raise specifically for execute_command to catch
+             raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
+        except Exception as e:
+            logger.error(f"Error reading head of file {parsed_args.file_path}", exc_info=True)
+            # Let the main execute_command handler catch and report generic errors
+            raise e
+
+    def _handle_fs_detect_format(self, args: List[str]) -> str:
+        """Handles the /fs_detect_format command."""
+        parser = self._create_parser("fs_detect_format", "Detect the format of a local file.")
+        parser.add_argument("file_path", help="Path to the local file")
+        parsed_args = parser.parse_args(args)
+
+        try:
+            # Use the LocalFileSystem instance's method
+            file_format = self.local_fs.detect_format(parsed_args.file_path)
+            if file_format:
+                return f"Detected format for '{parsed_args.file_path}': {file_format}"
+            else:
+                return f"Could not detect format for '{parsed_args.file_path}'."
+        except FileNotFoundError:
+             raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
+        except Exception as e:
+            logger.error(f"Error detecting format for file {parsed_args.file_path}", exc_info=True)
+            raise e
+
+
     # --- Git Tracking Handlers ---
     def _handle_git_record(self, args: List[str]) -> str:
         parser = self._create_parser("git_record", "Record a custom event.")
@@ -265,6 +352,43 @@ class DayhoffService:
         except Exception as e:
             logger.error("Error recording git event", exc_info=True)
             return f"Error recording event: {e}"
+
+    def _handle_git_log(self, args: List[str]) -> str:
+        """Handles the /git_log command."""
+        parser = self._create_parser("git_log", "Show git event log.")
+        parser.add_argument("limit", type=int, nargs='?', default=10, help="Maximum number of events to show (default: 10)")
+        parsed_args = parser.parse_args(args)
+
+        if parsed_args.limit <= 0:
+            raise argparse.ArgumentError(None, "Limit must be positive.")
+
+        try:
+            history = self.tracker.get_event_history()
+            if not history:
+                return "No events recorded yet."
+
+            # Apply limit (show most recent first)
+            limited_history = history[-parsed_args.limit:]
+
+            log_lines = ["Git Event History (most recent first):"]
+            for event in reversed(limited_history): # Reverse to show newest first
+                ts = event.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                meta_summary = json.dumps(event.metadata, sort_keys=True)
+                # Truncate long metadata for display?
+                if len(meta_summary) > 80:
+                    meta_summary = meta_summary[:77] + "..."
+                log_lines.append(f"- {ts} [{event.event_type}] {meta_summary}")
+                if event.files:
+                    files_summary = ", ".join(f"{k}: {v}" for k, v in event.files.items())
+                    if len(files_summary) > 80:
+                         files_summary = files_summary[:77] + "..."
+                    log_lines.append(f"    Files: {files_summary}")
+
+            return "\n".join(log_lines)
+        except Exception as e:
+            logger.error("Error retrieving git log", exc_info=True)
+            raise e
+
 
     # --- HPC Bridge Handlers ---
     def _get_ssh_manager(self) -> SSHManager:
@@ -615,3 +739,4 @@ class DayhoffService:
         except Exception as e:
             logger.error("Error getting environment details", exc_info=True)
             return f"Error getting environment details: {e}"
+
