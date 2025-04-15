@@ -7,6 +7,13 @@ import subprocess # Added for running test scripts
 import sys # Added for getting python executable
 import textwrap # For formatting help text
 import shlex # For shell quoting
+import io # For capturing rich output
+
+# --- Rich for coloring ---
+from rich.console import Console
+from rich.text import Text
+from rich.columns import Columns
+from rich.theme import Theme
 
 # --- Core Components ---
 from .config import DayhoffConfig
@@ -48,6 +55,80 @@ logger = logging.getLogger(__name__)
 if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+# --- Rich Console and Theme Setup ---
+# Define custom theme based on COLORCODE.md
+# (Simplified: using direct styles in the function for now)
+# custom_theme = Theme({
+#     "seq_raw": "bright_cyan",
+#     "seq_ref": "cyan",
+#     # ... add all others
+# })
+# console = Console(theme=custom_theme)
+# Create a console instance for capturing output
+# Use a StringIO buffer to capture output for returning as string
+string_io = io.StringIO()
+# Force terminal=True and color_system='truecolor' to ensure ANSI codes are generated
+# even if the script isn't directly run in a TTY (like in notebook/REPL backend)
+# Width can be adjusted or detected if possible, using a default for now.
+capture_console = Console(file=string_io, force_terminal=True, color_system="truecolor", width=120)
+
+# --- File Coloring Logic ---
+# Based on COLORCODE.md
+# Lowercase extensions for matching
+COLOR_MAP = {
+    # Sequences (Raw)
+    ".fastq": "bright_cyan", ".fq": "bright_cyan",
+    # Sequences (Reference/Assembly)
+    ".fasta": "cyan", ".fa": "cyan", ".fna": "cyan", ".ffn": "cyan", ".faa": "cyan", ".frn": "cyan",
+    # Sequences (Alignment)
+    ".sam": "dark_cyan", ".bam": "dark_cyan", ".cram": "dark_cyan",
+    # Annotations
+    ".gff": "bright_magenta", ".gff3": "bright_magenta", ".gtf": "bright_magenta", ".bed": "bright_magenta",
+    # Variant Data
+    ".vcf": "bright_red", ".bcf": "bright_red",
+    # Phylogenetics
+    ".nwk": "bright_green", ".newick": "bright_green", ".nex": "bright_green", ".nexus": "bright_green", ".phy": "bright_green",
+    # Tabular Data
+    ".csv": "yellow", ".tsv": "yellow", ".txt": "yellow", # Heuristic for .txt
+    # Scripts/Workflows
+    ".py": "blue", ".sh": "blue", ".cwl": "blue", ".wdl": "blue", ".nf": "blue", ".smk": "blue",
+    # Config/Metadata
+    ".json": "bright_black", ".yaml": "bright_black", ".yml": "bright_black", ".toml": "bright_black", ".ini": "bright_black", ".xml": "bright_black",
+    # Compressed (Applied as secondary? For now, just map final extension)
+    ".gz": "grey50", ".bz2": "grey50", ".zip": "grey50", ".tar": "grey50", ".tgz": "grey50", ".xz": "grey50",
+}
+
+def colorize_filename(filename: str, is_dir: bool = False) -> Text:
+    """Applies semantic coloring to a filename using Rich Text."""
+    if is_dir:
+        # Use bold blue for directories
+        return Text(filename, style="bold blue")
+    else:
+        # Get the extension
+        _base, ext = os.path.splitext(filename)
+        ext_lower = ext.lower()
+
+        # Handle multi-part extensions like .tar.gz (simple approach: check last part first)
+        style = COLOR_MAP.get(ext_lower)
+
+        # If no style found for the last part, check if it's a known compression format
+        # and look at the part before it.
+        if style is None and ext_lower in {".gz", ".bz2", ".xz"}:
+            _base2, ext2 = os.path.splitext(_base)
+            ext2_lower = ext2.lower()
+            style = COLOR_MAP.get(ext2_lower) # Get style for inner extension
+            # Optionally add compression indication? For now, just use inner style.
+            # Example: style = f"{COLOR_MAP.get(ext2_lower, 'default')} grey50"
+            if style is None:
+                 style = COLOR_MAP.get(ext_lower, "default") # Fallback to compression color
+
+        elif style is None:
+             style = "default" # Default style if no match
+
+        return Text(filename, style=style)
+
+# --- End File Coloring Logic ---
+
 
 class DayhoffService:
     """Shared backend service for both CLI and notebook interfaces"""
@@ -82,7 +163,7 @@ class DayhoffService:
             "config_ssh": {"handler": self._handle_config_ssh, "help": "Get SSH configuration. Usage: /config_ssh"},
             "config_save": {"handler": self._handle_config_save, "help": "Save current configuration. Usage: /config_save"},
             # --- File System ---
-            "fs_find_seq": {"handler": self._handle_fs_find_seq, "help": "Find sequence files in a directory. Usage: /fs_find_seq [root_path]"},
+            "fs_find_seq": {"handler": self._handle_fs_find_seq, "help": "Find sequence files in a directory (colors output). Usage: /fs_find_seq [root_path]"},
             "fs_head": {"handler": self._handle_fs_head, "help": "Show the first N lines of a local file. Usage: /fs_head <file_path> [num_lines=10]"},
             "fs_detect_format": {"handler": self._handle_fs_detect_format, "help": "Detect the format of a local file. Usage: /fs_detect_format <file_path>"},
             # "fs_stats": {"handler": self._handle_fs_stats, "help": "Get file statistics. Usage: /fs_stats <filepath>"}, # Needs FileStats class
@@ -94,7 +175,7 @@ class DayhoffService:
             "hpc_connect": {"handler": self._handle_hpc_connect, "help": "Establish a persistent SSH connection to the HPC. Usage: /hpc_connect"},
             "hpc_disconnect": {"handler": self._handle_hpc_disconnect, "help": "Close the persistent SSH connection to the HPC. Usage: /hpc_disconnect"},
             "hpc_run": {"handler": self._handle_hpc_run, "help": "Execute a command on the HPC using the active connection. Usage: /hpc_run <command_string>"},
-            "ls": {"handler": self._handle_ls, "help": "List files in the current remote directory (shortcut for /hpc_run ls). Usage: /ls [ls_options_and_paths]"},
+            "ls": {"handler": self._handle_ls, "help": "List files in the current remote directory with colors. Usage: /ls [ls_options_ignored]"}, # Note: ls options ignored now
             "cd": {"handler": self._handle_cd, "help": "Change the current remote directory. Usage: /cd <remote_directory>"},
             "hpc_sync_up": {"handler": self._handle_hpc_sync_up, "help": "Upload file(s) to HPC. Usage: /hpc_sync_up <local_path_or_glob> <remote_dir>"},
             "hpc_sync_down": {"handler": self._handle_hpc_sync_down, "help": "Download file(s) from HPC. Usage: /hpc_sync_down <remote_path_or_glob> <local_dir>"},
@@ -140,7 +221,8 @@ class DayhoffService:
                 # Consider adding more context like current working directory?
                 # Skip recording for commands that primarily read state or manage connections
                 # Also skip recording for 'ls' and 'cd' as they are essentially hpc_run wrappers
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd']:
+                # Skip fs_find_seq as well now, as it's primarily reading state
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
                     self.tracker.record_event(
                         event_type="command_executed",
                         metadata={
@@ -153,6 +235,8 @@ class DayhoffService:
                 result = handler(args)
                 logger.info(f"Command /{command} executed successfully.")
                 # Avoid printing None results explicitly in the REPL
+                # If the result is already a string (potentially with ANSI codes), return it directly.
+                # If it's None, return empty string.
                 return result if result is not None else ""
             except argparse.ArgumentError as e:
                  logger.warning(f"Argument error for /{command}: {e}")
@@ -180,7 +264,7 @@ class DayhoffService:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True) # Log full traceback for unexpected errors
                 # Log the exception details?
                 # Skip recording failure for commands that primarily read state or manage connections
-                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd']:
+                if command not in ['test', 'hpc_connect', 'hpc_disconnect', 'help', 'config_get', 'config_ssh', 'llm_budget', 'llm_context_get', 'env_get', 'git_log', 'hpc_slurm_status', 'hpc_cred_get', 'ls', 'cd', 'fs_find_seq']:
                     self.tracker.record_event(
                         event_type="command_failed",
                         metadata={
@@ -393,23 +477,45 @@ class DayhoffService:
 
     # --- File System Handlers ---
     def _handle_fs_find_seq(self, args: List[str]) -> str:
+        """Handles the /fs_find_seq command, coloring the output."""
         parser = self._create_parser("fs_find_seq", self._command_map['fs_find_seq']['help'])
         parser.add_argument("root_path", nargs='?', default='.', help="Optional root directory to search (default: current directory)")
         parsed_args = parser.parse_args(args)
 
-        # Note: Iterators are tricky in a simple REPL.
-        # We'll collect and return the list for now.
         try:
             # Instantiate BioDataExplorer with the specified or default path
             explorer = BioDataExplorer(root_path=parsed_args.root_path)
             files = list(explorer.find_sequence_files()) # Collect results from iterator
+            abs_root = os.path.abspath(parsed_args.root_path)
+
             if not files:
-                return f"No sequence files found in '{os.path.abspath(parsed_args.root_path)}'."
-            # Return absolute paths for clarity
-            abs_files = [os.path.abspath(f) for f in files]
-            return f"Found sequence files in '{os.path.abspath(parsed_args.root_path)}':\n" + "\n".join(abs_files)
+                return f"No sequence files found in '{abs_root}'."
+
+            # Colorize the output
+            colored_files = []
+            for f_path in files:
+                abs_path = os.path.abspath(f_path)
+                # Colorize only the basename part
+                dirname = os.path.dirname(abs_path)
+                basename = os.path.basename(abs_path)
+                is_dir = os.path.isdir(abs_path) # Check if it's a directory (though find_sequence_files shouldn't return dirs)
+                colored_basename = colorize_filename(basename, is_dir=is_dir)
+
+                # Combine directory path (plain) with colored basename
+                # Use Text.assemble for combining plain string and Text object
+                full_colored_path = Text.assemble(dirname + os.path.sep, colored_basename)
+                colored_files.append(full_colored_path)
+
+            # Use rich.print to capture the colored output
+            global string_io, capture_console
+            string_io.seek(0)
+            string_io.truncate(0)
+            capture_console.print(f"Found sequence files in '{abs_root}':")
+            for item in colored_files:
+                capture_console.print(item) # Print each Text object
+            return string_io.getvalue().strip() # Return captured string
+
         except ValueError as e: # Catch specific error from BioDataExplorer init
-             # Let main handler report this error
              raise e
         except Exception as e:
             logger.error(f"Error finding sequence files in {parsed_args.root_path}", exc_info=True)
@@ -429,15 +535,33 @@ class DayhoffService:
         try:
             # Use the FileInspector instance
             lines = list(self.file_inspector.head(parsed_args.file_path, parsed_args.num_lines))
+            abs_path = os.path.abspath(parsed_args.file_path) # Get absolute path
             if not lines:
                 # Check if file exists before saying it's empty
                 if not self.local_fs.exists(parsed_args.file_path):
-                     raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
-                return f"File is empty: {parsed_args.file_path}"
-            return f"First {len(lines)} lines of '{parsed_args.file_path}':\n---\n" + "\n".join(lines) + "\n---"
+                     raise FileNotFoundError(f"File not found at '{abs_path}'")
+                return f"File is empty: {abs_path}"
+            # Colorize the filename in the header
+            dirname = os.path.dirname(abs_path)
+            basename = os.path.basename(abs_path)
+            colored_basename = colorize_filename(basename, is_dir=False)
+            header_text = Text.assemble(f"First {len(lines)} lines of '", dirname + os.path.sep, colored_basename, "':\n---")
+
+            # Capture output using rich console
+            global string_io, capture_console
+            string_io.seek(0)
+            string_io.truncate(0)
+            capture_console.print(header_text)
+            # Print lines as plain text for now (could add syntax highlighting later)
+            for line in lines:
+                 capture_console.print(line, highlight=False) # Avoid accidental highlighting
+            capture_console.print("---")
+            return string_io.getvalue().strip()
+
         except FileNotFoundError:
              # Re-raise specifically for execute_command to catch
-             raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
+             abs_path = os.path.abspath(parsed_args.file_path)
+             raise FileNotFoundError(f"File not found at '{abs_path}'")
         except Exception as e:
             logger.error(f"Error reading head of file {parsed_args.file_path}", exc_info=True)
             # Let the main execute_command handler catch and report generic errors
@@ -448,19 +572,33 @@ class DayhoffService:
         parser = self._create_parser("fs_detect_format", self._command_map['fs_detect_format']['help'])
         parser.add_argument("file_path", help="Path to the local file")
         parsed_args = parser.parse_args(args)
+        abs_path = os.path.abspath(parsed_args.file_path) # Get absolute path
 
         try:
             # Use the LocalFileSystem instance's method
             file_format = self.local_fs.detect_format(parsed_args.file_path)
+            # Colorize filename in output
+            dirname = os.path.dirname(abs_path)
+            basename = os.path.basename(abs_path)
+            colored_basename = colorize_filename(basename, is_dir=False)
+
             if file_format:
-                return f"Detected format for '{parsed_args.file_path}': {file_format}"
+                result_text = Text.assemble("Detected format for '", dirname + os.path.sep, colored_basename, f"': {file_format}")
             else:
                  # Check if file exists before saying format unknown
                  if not self.local_fs.exists(parsed_args.file_path):
-                     raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
-                 return f"Could not detect format for '{parsed_args.file_path}'."
+                     raise FileNotFoundError(f"File not found at '{abs_path}'")
+                 result_text = Text.assemble("Could not detect format for '", dirname + os.path.sep, colored_basename, "'.")
+
+            # Capture output using rich console
+            global string_io, capture_console
+            string_io.seek(0)
+            string_io.truncate(0)
+            capture_console.print(result_text)
+            return string_io.getvalue().strip()
+
         except FileNotFoundError:
-             raise FileNotFoundError(f"File not found at '{parsed_args.file_path}'")
+             raise FileNotFoundError(f"File not found at '{abs_path}'")
         except Exception as e:
             logger.error(f"Error detecting format for file {parsed_args.file_path}", exc_info=True)
             raise e
@@ -797,7 +935,8 @@ class DayhoffService:
             # Add a default timeout? Or make it configurable? Let's use 60s default from execute_command
             output = self.active_ssh_manager.execute_command(full_command)
             # Return output, potentially trimming whitespace
-            return f"Output (in {self.remote_cwd}):\n---\n{output.strip()}\n---"
+            # Don't add extra formatting here, return raw output
+            return output # Return raw output
         except ConnectionError as e:
             # Connection might have dropped since /hpc_connect
             logger.error(f"Connection error during /hpc_run: {e}", exc_info=False)
@@ -816,7 +955,8 @@ class DayhoffService:
              if "No such file or directory" in str(e):
                  logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid. Resetting to '~'.")
                  self.remote_cwd = "~" # Attempt to reset to home
-                 return f"Error: Remote directory '{self.remote_cwd}' likely invalid. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}"
+                 # Raise error instead of returning formatted string
+                 raise RuntimeError(f"Remote directory '{self.remote_cwd}' likely invalid. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
              # Re-raise the original error to be handled by execute_command's main loop
              raise e
         except Exception as e:
@@ -824,15 +964,73 @@ class DayhoffService:
             # Let the main handler report this as a runtime error.
             raise RuntimeError(f"Unexpected error executing remote command: {e}") from e
 
-    # --- New /ls and /cd Handlers ---
+    # --- Modified /ls Handler ---
     def _handle_ls(self, args: List[str]) -> str:
-        """Handles the /ls command by calling /hpc_run ls."""
-        # No specific parser needed here, just pass args through
-        # Construct the arguments for _handle_hpc_run: ['ls'] + original args
-        ls_args = ['ls'] + args
-        logger.debug(f"Forwarding /ls command with args {args} to _handle_hpc_run as {ls_args}")
-        # Call the hpc_run handler directly
-        return self._handle_hpc_run(ls_args)
+        """Handles the /ls command by fetching file list/types and coloring locally."""
+        # Note: This version ignores any arguments passed to /ls for simplicity.
+        # It could be extended to handle paths later.
+        parser = self._create_parser("ls", self._command_map['ls']['help'])
+        # Allow unknown args for now, although we ignore them
+        parsed_args, unknown_args = parser.parse_known_args(args)
+        if unknown_args:
+             logger.warning(f"Ignoring unsupported arguments/options for /ls: {unknown_args}")
+
+        if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
+            raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
+        if not self.remote_cwd:
+             raise ConnectionError("Remote working directory unknown. Please use /hpc_connect again.")
+
+        # Command to get file type (%Y) and name (%f) for items in current dir
+        # %Y: File type (d=dir, f=file, l=link, etc.)
+        # %P: File's name with the starting command-line argument removed (gives relative name)
+        # -maxdepth 1: Only current directory
+        # -mindepth 1: Exclude the '.' entry itself
+        # Use shlex.quote for safety
+        find_cmd = f"find . -mindepth 1 -maxdepth 1 -printf '%Y %P\\n'"
+        full_command = f"cd {shlex.quote(self.remote_cwd)} && {find_cmd}"
+
+        try:
+            logger.info(f"Fetching file list for /ls with command: {full_command}")
+            output = self.active_ssh_manager.execute_command(full_command, timeout=30)
+
+            items = []
+            if output:
+                lines = output.strip().split('\n')
+                for line in lines:
+                    if not line: continue
+                    try:
+                        type_char, name = line.split(' ', 1)
+                        is_dir = (type_char == 'd')
+                        # Add other type checks if needed (e.g., 'l' for symlink)
+                        items.append(colorize_filename(name, is_dir=is_dir))
+                    except ValueError:
+                        logger.warning(f"Could not parse line from find output: '{line}'")
+                        items.append(Text(line.strip(), style="red")) # Show parse error in red
+
+            if not items:
+                return f"(Directory {self.remote_cwd} is empty)"
+
+            # Sort items alphabetically by plain text name for consistent order
+            items.sort(key=lambda text: text.plain)
+
+            # Use rich.Columns for potentially multi-column display
+            columns = Columns(items, expand=True, equal=True)
+
+            # Capture the output of rich.print
+            global string_io, capture_console
+            string_io.seek(0)        # Reset buffer
+            string_io.truncate(0)    # Clear buffer
+            capture_console.print(columns)
+            return string_io.getvalue().strip() # Return captured string
+
+        except (ConnectionError, TimeoutError, RuntimeError) as e:
+            # Let main handler manage reporting these errors
+            logger.error(f"Error during /ls execution: {type(e).__name__}: {e}", exc_info=False)
+            raise e # Re-raise
+        except Exception as e:
+            logger.error(f"Unexpected error during /ls execution: {e}", exc_info=True)
+            raise RuntimeError(f"Unexpected error listing remote directory: {e}") from e
+
 
     def _handle_cd(self, args: List[str]) -> str:
         """Handles the /cd command by verifying the directory and updating remote_cwd."""
