@@ -33,3 +33,4 @@ Event(timestamp=datetime.datetime(2025, 4, 15, 16, 5, 52, 409134), event_type='c
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 17, 673840), event_type='command_executed', metadata={'command': 'help', 'args': []}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 25, 943001), event_type='command_executed', metadata={'command': 'hpc_slurm_status', 'args': []}, user='Robert Hoehndorf')
 Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 26, 9188), event_type='command_failed', metadata={'command': 'hpc_slurm_status', 'args': [], 'error': 'Error getting Slurm queue info via SSH: SSH connection not established or active.', 'error_type': 'RuntimeError'}, user='Robert Hoehndorf')
+Event(timestamp=datetime.datetime(2025, 4, 15, 16, 18, 32, 949436), event_type='command_executed', metadata={'command': 'help', 'args': []}, user='Robert Hoehndorf')
