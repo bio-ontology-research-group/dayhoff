@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # --- Readline Setup for Autocompletion ---
 
-COMMANDS = [] # Will be populated by DayhoffService instance
+COMMANDS = [] # Will be populated by DayhoffService instance (without leading '/')
 
 def setup_readline(service: DayhoffService):
     """Configures readline for history and autocompletion."""
@@ -29,8 +29,9 @@ def setup_readline(service: DayhoffService):
         return
 
     global COMMANDS
-    # Get available commands from the service, prepend '/'
-    COMMANDS = ['/' + cmd for cmd in service.get_available_commands()]
+    # Get available commands from the service, WITHOUT the leading '/'
+    # Store them sorted for consistent completion order
+    COMMANDS = sorted(service.get_available_commands())
 
     # --- History ---
     histfile = os.path.join(os.path.expanduser("~"), ".dayhoff_history")
@@ -50,15 +51,23 @@ def setup_readline(service: DayhoffService):
     def completer(text, state):
         """Readline completer function."""
         line = readline.get_line_buffer()
-        # Only complete at the beginning of the line or after a space if needed later
-        # For now, only complete the command itself (starting with '/')
-        if line.startswith('/'):
-            prefix = line.split(' ')[0] # Get the command part
-            options = [cmd for cmd in COMMANDS if cmd.startswith(prefix)]
+        parts = line.split(' ', 1) # Split into command part and the rest
+
+        # Only complete the command if it starts with '/' and there are no spaces yet
+        # 'text' is the part of the word being completed (e.g., 'he' in '/he')
+        if line.startswith('/') and ' ' not in parts[0]:
+            # Find commands in our list that start with the text being completed
+            options = [cmd for cmd in COMMANDS if cmd.startswith(text)]
             if state < len(options):
+                # Return the full command name (without '/')
+                # Readline will append this to the '/' already typed, replacing 'text'
                 return options[state]
             else:
                 return None
+        # Placeholder for potential argument completion in the future
+        # elif ' ' in line:
+        #     # Logic to complete arguments based on the command
+        #     pass
         return None # No completion otherwise
 
     readline.set_completer(completer)
@@ -83,9 +92,8 @@ def repl():
     print("Welcome to the Dayhoff REPL. Type '/help' for commands, '/exit' or Ctrl+D to quit.")
 
     # --- Diagnostic Print ---
-    # Print the commands loaded by this specific service instance
-    loaded_commands = service.get_available_commands()
-    print(f"[DEBUG] Loaded commands: {sorted(loaded_commands)}")
+    # Print the commands loaded by this specific service instance and used for completion
+    print(f"[DEBUG] Commands available for completion: {COMMANDS}")
     # --- End Diagnostic Print ---
 
 
