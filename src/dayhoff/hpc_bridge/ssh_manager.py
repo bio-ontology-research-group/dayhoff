@@ -18,7 +18,7 @@ class SSHManager:
         Args:
             ssh_config: A dictionary containing SSH configuration details like
                         'host', 'username', 'auth_method', 'ssh_key', 'password',
-                        'known_hosts', 'port'.
+                        'known_hosts', 'port', 'ssh_key_dir'.
 
         Raises:
             ValueError: If essential configuration keys ('host') are missing.
@@ -41,19 +41,52 @@ class SSHManager:
         # Clean the auth_method string: remove comments and strip whitespace
         self.auth_method: str = raw_auth_method.split('#')[0].strip().lower()
 
-        self.key_file: Optional[str] = ssh_config.get('ssh_key') # Path should be resolved by config loader
-        # Clean the key_file string if it exists
-        if self.key_file:
-            self.key_file = self.key_file.split('#')[0].strip()
+        # --- SSH Key Handling ---
+        raw_key_file: Optional[str] = ssh_config.get('ssh_key')
+        raw_key_dir: Optional[str] = ssh_config.get('ssh_key_dir')
+        self.key_file: Optional[str] = None # Initialize
+
+        key_file_name: Optional[str] = None
+        if raw_key_file:
+            key_file_name = raw_key_file.split('#')[0].strip()
+
+        key_dir: Optional[str] = None
+        if raw_key_dir:
+            key_dir = raw_key_dir.split('#')[0].strip()
+
+        if self.auth_method == 'key':
+            if key_file_name:
+                if key_dir:
+                    # Construct full path if directory is provided
+                    expanded_key_dir = os.path.expanduser(key_dir)
+                    self.key_file = os.path.join(expanded_key_dir, key_file_name)
+                    logger.debug(f"Constructed SSH key path: {self.key_file}")
+                else:
+                    # Assume key_file_name might be a full path or relative to CWD
+                    # Expanduser handles '~' if present at the start
+                    self.key_file = os.path.expanduser(key_file_name)
+                    logger.debug(f"Using SSH key path directly (no ssh_key_dir): {self.key_file}")
+            else:
+                logger.warning("SSH auth method is 'key', but 'ssh_key' is missing or empty in config.")
+        # --- End SSH Key Handling ---
+
 
         self.password: Optional[str] = ssh_config.get('password') # Password should ideally be handled securely
 
         # Host key checking
         self.known_hosts_file: Optional[str] = ssh_config.get('known_hosts') # Path should be resolved
 
-        logger.debug(f"SSHManager initialized for host={self.host}, user={self.username}, port={self.port}, auth={self.auth_method}")
+        # Clean known_hosts_file path if it exists
+        if self.known_hosts_file:
+             raw_known_hosts = self.known_hosts_file
+             self.known_hosts_file = os.path.expanduser(raw_known_hosts.split('#')[0].strip())
+             logger.debug(f"Using known_hosts file: {self.known_hosts_file}")
+
+
+        logger.debug(f"SSHManager initialized for host={self.host}, user={self.username}, port={self.port}, auth={self.auth_method}, key_file={self.key_file}")
         if self.auth_method == 'key' and not self.key_file:
-             logger.warning("SSH auth method is 'key', but 'ssh_key' path is missing or empty after cleaning in config.")
+             # This warning might be redundant now due to earlier checks, but keep for clarity
+             logger.warning("SSH auth method is 'key', but effective key file path could not be determined.")
         elif self.auth_method == 'password' and not self.password:
              logger.warning("SSH auth method is 'password', but 'password' is missing in config.")
 
@@ -71,14 +104,19 @@ class SSHManager:
         try:
             self.connection = paramiko.SSHClient()
 
-            # Load known hosts if specified
-            if self.known_hosts_file and os.path.exists(self.known_hosts_file):
-                 self.connection.load_system_host_keys(filename=self.known_hosts_file)
-                 logger.debug(f"Loaded known host keys from {self.known_hosts_file}")
+            # Load known hosts if specified and exists
+            if self.known_hosts_file:
+                if os.path.exists(self.known_hosts_file):
+                    self.connection.load_system_host_keys(filename=self.known_hosts_file)
+                    logger.debug(f"Loaded known host keys from {self.known_hosts_file}")
+                else:
+                    logger.warning(f"Specified known_hosts file not found: {self.known_hosts_file}. Falling back to system keys.")
+                    self.connection.load_system_host_keys() # Fallback
             else:
-                 # Fallback to default system keys if specific file not found/specified
+                 # Fallback to default system keys if specific file not specified
                  self.connection.load_system_host_keys()
-                 logger.debug("Loaded default system host keys.")
+                 logger.debug("Loaded default system host keys (no specific known_hosts file configured).")
+
 
             # Policy for adding new host keys (consider RejectPolicy for higher security)
             self.connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -95,14 +133,17 @@ class SSHManager:
 
             if self.auth_method == 'key':
                 if not self.key_file:
-                    logger.error("SSH key file path is missing or empty in config.")
+                    # This error should ideally be caught during init, but double-check
+                    logger.error("SSH key file path was not determined from config.")
                     return False
+                # Check existence using the potentially full path stored in self.key_file
                 if not os.path.exists(self.key_file):
-                    logger.error(f"SSH key file not found: {self.key_file}")
+                    logger.error(f"SSH key file not found: {self.key_file}") # Log the full path being checked
                     return False
                 try:
                     # Attempt to load key (supports various formats)
                     # Consider adding passphrase support if keys are encrypted
+                    # Use self.key_file which should now be the full path
                     private_key = paramiko.Ed25519Key.from_private_key_file(self.key_file)
                     logger.debug(f"Loaded Ed25519 key from {self.key_file}")
                 except paramiko.ssh_exception.SSHException:
