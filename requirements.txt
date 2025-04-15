@@ -1,6 +1,8 @@
 # Core Dependencies
 gitpython>=3.1.0
 paramiko>=2.7.0
+keyring>=23.0
+biopython>=1.78
 
 # Optional Dependencies (install with pip install -r requirements.txt -r requirements-extra.txt or similar)
 # Consider splitting extras into separate files (e.g., requirements-ai.txt) if preferred
