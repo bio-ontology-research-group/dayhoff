@@ -713,6 +713,18 @@ class DayhoffService:
                     if section_upper == 'LLM':
                          self.llm_client = None
                          logger.info("Invalidated cached LLM client due to config change.")
+                    # Invalidate cached SSH manager if HPC settings changed
+                    if section_upper == 'HPC':
+                         if self.active_ssh_manager:
+                             logger.warning("HPC config changed. Closing active SSH connection.")
+                             try: self.active_ssh_manager.disconnect()
+                             except Exception: pass
+                             self.active_ssh_manager = None
+                             self.remote_cwd = None
+                             console.print("[warning]HPC configuration changed. Active connection closed. Please use /hpc_connect again.[/warning]")
+                         else:
+                             logger.info("HPC config changed. Any new connection will use the updated settings.")
+
                     console.print(f"Config '[{section_upper}].{parsed_args.key}' set to '{parsed_args.value}' and saved.", style="info")
                 except ValueError as e: # Catch validation errors from config.set
                     console.print(f"[error]Validation Error:[/error] {e}")
@@ -839,30 +851,13 @@ class DayhoffService:
     # --- HPC Bridge Handlers ---
     def _get_ssh_manager(self, connect_now: bool = False) -> SSHManager:
         """Helper to get an initialized SSHManager."""
-        ssh_config = self.config.get_ssh_config()
-        if not ssh_config or not ssh_config.get('host'): # Changed key from 'hostname' to 'host'
-            raise ConnectionError("HPC host configuration missing. Use '/config set HPC default_host <hostname>' and potentially other HPC settings.")
+        ssh_config_dict = self.config.get_ssh_config() # Renamed variable for clarity
+        if not ssh_config_dict or not ssh_config_dict.get('host'):
+            raise ConnectionError("HPC host configuration missing. Use '/config set HPC host <hostname>' and potentially other HPC settings.")
         try:
-            # Pass the dictionary directly to SSHManager constructor if it accepts it
-            # Or extract individual parameters as needed by SSHManager's __init__
-            # Ensure CredentialManager is used if password auth is selected
-            password = None
-            if ssh_config.get('auth_method') == 'password':
-                 cred_manager = CredentialManager(system_name=ssh_config.get('credential_system', 'dayhoff_hpc'))
-                 password = cred_manager.get_password(username=ssh_config.get('username'))
-                 # SSHManager might handle prompting if password is None here, or we raise error
-                 if not password:
-                      logger.warning(f"Password auth selected but no password found in keyring for {ssh_config.get('username')}. Connection might fail or prompt.")
-
-
-            ssh_manager = SSHManager(
-                 hostname=ssh_config['host'],
-                 username=ssh_config['username'],
-                 auth_method=ssh_config['auth_method'],
-                 key_filename=ssh_config.get('key_filename'), # Use the constructed full path
-                 password=password, # Pass retrieved password
-                 known_hosts_file=ssh_config.get('known_hosts')
-            )
+            # Pass the dictionary directly to SSHManager constructor
+            # SSHManager's __init__ should handle extracting values and potentially using CredentialManager
+            ssh_manager = SSHManager(ssh_config=ssh_config_dict)
 
             if connect_now:
                 logger.debug("Attempting immediate connection in _get_ssh_manager...")
@@ -872,8 +867,10 @@ class DayhoffService:
                 logger.debug("Immediate connection successful.")
             return ssh_manager
         except KeyError as e:
-             raise ConnectionError(f"Missing required SSH configuration key: {e}. Check [HPC] section.") from e
+             # This might happen if SSHManager expects a key not provided by get_ssh_config
+             raise ConnectionError(f"Missing required SSH configuration key expected by SSHManager: {e}. Check [HPC] section and SSHManager implementation.") from e
         except ValueError as e:
+             # Catch validation errors from within SSHManager.__init__
              raise ConnectionError(f"Failed to initialize SSH connection due to config error: {e}") from e
         except ConnectionError as e:
              raise e # Re-raise specific connection errors
