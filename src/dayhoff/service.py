@@ -184,9 +184,10 @@ class DayhoffService:
                       set <section> <key> <value>   : Set a config value (and save). Type '/config set' for examples.
                       save                          : Manually save the current configuration.
                       show [section|ssh|llm|hpc|all]: Show a specific section, 'ssh' (HPC subset), 'llm', 'hpc', or all config.
+                      slurm_singularity <on|off>    : Enable/disable default Singularity use for Slurm jobs.
                     HPC Settings (Section: HPC):
                       execution_mode <mode>         : Set execution mode ('direct' or 'slurm'). {execution_mode_help}
-                      slurm_use_singularity <bool>  : Default to using Singularity for Slurm jobs (true/false).
+                      slurm_use_singularity <bool>  : Default to using Singularity for Slurm jobs (true/false). Use '/config slurm_singularity'.
                     Workflow Settings (Section: WORKFLOWS):
                       default_workflow_type <lang>  : Set preferred language. Use '/language <lang>' command.
                     {executor_help_text}
@@ -750,6 +751,10 @@ class DayhoffService:
         # Updated help text in _build_command_map reflects 'hpc' option
         parser_show.add_argument("section", nargs='?', default=None, help="Section name (e.g., HPC, LLM, ssh, all) or omit for all.")
 
+        # --- Subparser: slurm_singularity ---
+        parser_slurm_singularity = subparsers.add_parser("slurm_singularity", help="Enable/disable default Singularity use for Slurm jobs.", add_help=True)
+        parser_slurm_singularity.add_argument("state", choices=['on', 'off'], help="Set default Singularity usage to 'on' or 'off'.")
+
 
         # --- Parse arguments ---
         try:
@@ -879,6 +884,24 @@ class DayhoffService:
                          # Add other masking if needed
 
                          console.print(Panel(json.dumps(display_data, indent=2), title=f"Configuration Section [{section_upper}]", border_style="cyan"))
+
+            elif parsed_args.subcommand == "slurm_singularity":
+                # Handle the new subcommand
+                section = 'HPC'
+                key = 'slurm_use_singularity'
+                value_str = 'True' if parsed_args.state == 'on' else 'False'
+                try:
+                    # Use config.set which handles validation and saving
+                    self.config.set(section, key, value_str)
+                    # No need to disconnect SSH for this specific setting change
+                    logger.info(f"Set {key} to {value_str}")
+                    console.print(f"Default Slurm Singularity usage set to: [bold cyan]{parsed_args.state}[/bold cyan]", style="info")
+                except ValueError as e: # Catch validation errors from config.set
+                    console.print(f"[error]Validation Error:[/error] {e}")
+                except Exception as e:
+                    logger.error(f"Failed to set config [{section}].{key}", exc_info=True)
+                    console.print(f"[error]Failed to set config:[/error] {e}")
+
             else:
                  # Should be caught by argparse if required=True
                  parser.print_help()
