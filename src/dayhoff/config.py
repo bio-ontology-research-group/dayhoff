@@ -76,7 +76,12 @@ class DayhoffConfig:
 
     def __init__(self, config_path_override: Optional[str] = None):
         # Allow inline comments by specifying the comment prefix and inline_comment_prefixes
-        self.config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'), interpolation=None)
+        # Initialize with defaults from DEFAULT_CONFIG['DEFAULT']
+        self.config = configparser.ConfigParser(
+            defaults=self.DEFAULT_CONFIG['DEFAULT'],
+            inline_comment_prefixes=('#', ';'),
+            interpolation=None
+        )
         self.config_path = self._get_config_path(config_path_override)
 
         # Load existing or create default config
@@ -103,6 +108,8 @@ class DayhoffConfig:
         """Loads the config file or creates it with defaults if it doesn't exist."""
         if self.config_path.exists():
             logger.info(f"Loading configuration from: {self.config_path}")
+            # Read the file, which will overlay existing values over the defaults
+            # already set during ConfigParser initialization.
             self.config.read(self.config_path)
             # Ensure all default sections and keys exist after loading
             self._ensure_defaults()
@@ -114,26 +121,58 @@ class DayhoffConfig:
     def _ensure_defaults(self):
         """Ensures that all default sections and keys exist in the loaded config."""
         needs_save = False
+        # Handle the special 'DEFAULT' section first by checking its keys
+        default_section_key = 'DEFAULT'
+        if default_section_key in self.DEFAULT_CONFIG:
+            for key, value in self.DEFAULT_CONFIG[default_section_key].items():
+                # Check if the key exists in the actual defaults of the parser
+                if key not in self.config.defaults():
+                    self.config.defaults()[key] = str(value)
+                    needs_save = True
+                    logger.info(f"Added missing default option: [DEFAULT] {key} = {value}")
+
+        # Handle regular sections
         for section, defaults in self.DEFAULT_CONFIG.items():
+            if section == default_section_key:
+                continue # Skip the special DEFAULT section here
+
             if not self.config.has_section(section):
+                # This is where the error occurred before. Now it only runs for non-DEFAULT sections.
                 self.config.add_section(section)
                 needs_save = True
                 logger.info(f"Added missing default section: [{section}]")
-            for key, value in defaults.items():
-                if not self.config.has_option(section, key):
+                # Add all default keys for the new section
+                for key, value in defaults.items():
                     self.config.set(section, key, str(value))
-                    needs_save = True
-                    logger.info(f"Added missing default key: [{section}] {key} = {value}")
+                    logger.info(f"Added default key for new section: [{section}] {key} = {value}")
+            else:
+                # Section exists, check if all default keys are present
+                for key, value in defaults.items():
+                    if not self.config.has_option(section, key):
+                        self.config.set(section, key, str(value))
+                        needs_save = True
+                        logger.info(f"Added missing default key: [{section}] {key} = {value}")
+
         if needs_save:
             logger.info("Saving configuration file with added default options.")
             self.save_config()
 
     def _create_default_config(self):
-        """Populates the ConfigParser object with default settings."""
-        self.config.read_dict(self.DEFAULT_CONFIG)
-        logger.info("Initialized with default configuration settings.")
-        # Add comments for clarity when creating the file (optional but helpful)
-        # This part is tricky with read_dict, might need manual section/key setting if comments are crucial on creation
+        """Populates the ConfigParser object with default settings for non-DEFAULT sections."""
+        # Defaults for the 'DEFAULT' section are already handled during initialization.
+        # We only need to add the other sections and their default key-value pairs.
+        for section, defaults in self.DEFAULT_CONFIG.items():
+            if section == 'DEFAULT':
+                continue # Skip DEFAULT section
+            if not self.config.has_section(section):
+                 self.config.add_section(section)
+            for key, value in defaults.items():
+                 # Set the default values for the non-DEFAULT sections
+                 self.config.set(section, key, str(value))
+
+        logger.info("Initialized non-DEFAULT sections with default configuration settings.")
+        # Comments are not easily added when using read_dict or setting programmatically.
+        # The structure itself should be clear.
 
     def save_config(self):
         """Save the current configuration to file"""
@@ -147,36 +186,68 @@ class DayhoffConfig:
             logger.error(f"Failed to save configuration file {self.config_path}: {e}")
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        """Get a configuration value, stripping inline comments."""
-        # Ensure section exists before getting to avoid NoSectionError if defaults weren't loaded properly
-        if not self.config.has_section(section):
-            # Check if it's a default section that should exist
-            if section in self.DEFAULT_CONFIG:
-                 logger.warning(f"Config section [{section}] was missing, attempting recovery.")
-                 self._ensure_defaults() # Try to recover defaults
-                 if not self.config.has_section(section): # Still missing?
-                      logger.error(f"Config section [{section}] not found even after recovery attempt.")
-                      return default
-            else:
-                 logger.warning(f"Config section [{section}] not found.")
-                 return default
+        """Get a configuration value, utilizing configparser's fallback mechanism."""
+        # configparser automatically falls back to the DEFAULT section if an option
+        # is not found in the specified section.
+        # The 'fallback' argument to config.get handles cases where the option
+        # is not in the specified section OR the DEFAULT section.
 
+        # We still need to handle the case where the section itself might not exist,
+        # although _ensure_defaults should prevent this for default sections.
+        if not self.config.has_section(section) and section != 'DEFAULT':
+             # Check if it's a default section that should exist
+             if section in self.DEFAULT_CONFIG:
+                  logger.warning(f"Config section [{section}] was missing, attempting recovery.")
+                  self._ensure_defaults() # Try to recover defaults
+                  if not self.config.has_section(section): # Still missing?
+                       logger.error(f"Config section [{section}] not found even after recovery attempt.")
+                       return default
+             else:
+                  logger.warning(f"Config section [{section}] not found.")
+                  return default
+
+        # Use configparser's get method which handles DEFAULT fallback automatically.
+        # Provide the explicit default value for cases where it's not found anywhere.
         value = self.config.get(section, key, fallback=default)
 
         # Expand user path for specific known path keys
         if value and isinstance(value, str):
-            if (section == 'DEFAULT' and key == 'data_dir') or \
-               (section == 'HPC' and key in ['ssh_key_dir', 'known_hosts']):
-                expanded_value = str(Path(value).expanduser())
-                if expanded_value != value:
-                    logger.debug(f"Expanded path for [{section}].{key}: '{value}' -> '{expanded_value}'")
-                return expanded_value
+            # Check if the key is one we need to expand, considering the section
+            # or if it's a default value being retrieved (section might be 'DEFAULT' conceptually)
+            original_section = section # Keep track of the requested section
+            actual_section, actual_key = self._find_key_location(key) # Find where the key actually lives (could be DEFAULT)
+
+            if actual_section: # Check if the key was found at all
+                if (actual_section == 'DEFAULT' and actual_key == 'data_dir') or \
+                   (actual_section == 'HPC' and actual_key in ['ssh_key_dir', 'known_hosts']):
+                    expanded_value = str(Path(value).expanduser())
+                    if expanded_value != value:
+                        logger.debug(f"Expanded path for [{original_section}].{key} (found in [{actual_section}]): '{value}' -> '{expanded_value}'")
+                    return expanded_value
 
         logger.debug(f"Config get [{section}].{key}: returning '{value}'")
         return value
 
+    def _find_key_location(self, key_to_find: str) -> tuple[Optional[str], Optional[str]]:
+        """Helper to find if a key exists in any section, starting from DEFAULT."""
+        # Check DEFAULT first
+        if key_to_find in self.config.defaults():
+            return 'DEFAULT', key_to_find
+        # Check other sections
+        for section_name in self.config.sections():
+            if self.config.has_option(section_name, key_to_find):
+                return section_name, key_to_find
+        return None, None
+
+
     def set(self, section: str, key: str, value: Any):
         """Set a configuration value and save."""
+        # Do not allow setting values in the 'DEFAULT' section directly via this method
+        # as it's meant for fallback defaults. Users should set specific section values.
+        if section == 'DEFAULT':
+             logger.error("Setting values directly in the 'DEFAULT' section is not supported via set(). Set values in specific sections.")
+             raise ValueError("Cannot set values directly in the 'DEFAULT' section.")
+
         if not self.config.has_section(section):
             self.config.add_section(section)
             logger.info(f"Created new config section: [{section}]")
@@ -185,10 +256,9 @@ class DayhoffConfig:
 
         # --- Validation ---
         validation_error = None
-        if section == 'DEFAULT':
-            if key == 'log_level' and str_value not in ALLOWED_LOG_LEVELS:
-                validation_error = f"Invalid log_level '{str_value}'. Allowed: {', '.join(ALLOWED_LOG_LEVELS)}"
-        elif section == 'HPC':
+        # Note: Validation for 'DEFAULT' section keys is less critical here as we prevent setting them directly.
+        # However, if loaded from a file, they might be invalid. Validation during 'get' might be needed if strictness is required.
+        if section == 'HPC':
             if key == 'auth_method' and str_value not in ALLOWED_AUTH_METHODS:
                 validation_error = f"Invalid auth_method '{str_value}'. Allowed: {', '.join(ALLOWED_AUTH_METHODS)}"
         elif section == 'WORKFLOWS':
@@ -230,6 +300,7 @@ class DayhoffConfig:
 
                 # Construct full path for ssh_key if using key auth
                 if ssh_settings['auth_method'] == 'key' and ssh_settings['ssh_key_dir'] and ssh_settings['ssh_key']:
+                    # ssh_key_dir should already be expanded by self.get
                     full_key_path = Path(ssh_settings['ssh_key_dir']) / ssh_settings['ssh_key']
                     # Store the full path for the SSHManager
                     ssh_settings['key_filename'] = str(full_key_path)
@@ -245,17 +316,67 @@ class DayhoffConfig:
                 return {}
         else:
             logger.warning(f"Configuration section [{section_name}] not found.")
-            return {}
+            # Attempt to return defaults if section is missing but defined in DEFAULT_CONFIG
+            if section_name in self.DEFAULT_CONFIG:
+                 logger.info(f"Returning default values for missing section [{section_name}]")
+                 # Manually construct defaults, applying path expansion where needed
+                 defaults = self.DEFAULT_CONFIG[section_name]
+                 ssh_settings['host'] = defaults.get('default_host', '')
+                 ssh_settings['username'] = defaults.get('username', '')
+                 ssh_settings['auth_method'] = defaults.get('auth_method', 'key')
+                 ssh_settings['ssh_key_dir'] = str(Path(defaults.get('ssh_key_dir', '~/.ssh')).expanduser())
+                 ssh_settings['ssh_key'] = defaults.get('ssh_key', 'id_rsa')
+                 ssh_settings['known_hosts'] = str(Path(defaults.get('known_hosts', '~/.ssh/known_hosts')).expanduser())
+                 ssh_settings['remote_root'] = defaults.get('remote_root', '.')
+                 ssh_settings['credential_system'] = defaults.get('credential_system', 'dayhoff_hpc')
+                 if ssh_settings['auth_method'] == 'key' and ssh_settings['ssh_key_dir'] and ssh_settings['ssh_key']:
+                     full_key_path = Path(ssh_settings['ssh_key_dir']) / ssh_settings['ssh_key']
+                     ssh_settings['key_filename'] = str(full_key_path)
+                 else:
+                     ssh_settings['key_filename'] = None
+                 return ssh_settings
+            else:
+                 return {} # Section not defined in defaults either
 
     def get_section(self, section_name: str) -> Optional[Dict[str, str]]:
         """Get all key-value pairs for a specific section, using self.get for consistency."""
+        if section_name == 'DEFAULT':
+            # Return the effective defaults
+            logger.debug(f"Retrieving effective defaults for [DEFAULT] section.")
+            return dict(self.config.defaults())
+
         if not self.config.has_section(section_name):
             logger.warning(f"Configuration section [{section_name}] not found.")
-            return None
+            # Check if it's a default section and return its defaults if so
+            if section_name in self.DEFAULT_CONFIG:
+                 logger.info(f"Returning default values for missing section [{section_name}]")
+                 # Apply path expansion to default values before returning
+                 section_defaults = {}
+                 for key, value in self.DEFAULT_CONFIG[section_name].items():
+                     # Reuse the path expansion logic from get() if possible, or replicate it
+                     str_value = str(value)
+                     if (section_name == 'HPC' and key in ['ssh_key_dir', 'known_hosts']):
+                         section_defaults[key] = str(Path(str_value).expanduser())
+                     else:
+                         section_defaults[key] = str_value
+                 return section_defaults
+            else:
+                 return None # Section not defined in defaults either
+
         try:
             # Iterate through keys in the section and use self.get to retrieve them
-            # This ensures defaults and path expansions are handled
-            section_dict = {key: self.get(section_name, key) for key in self.config[section_name]}
+            # This ensures defaults and path expansions are handled correctly via fallback
+            section_dict = {}
+            # Need to get options defined *only* in this section + options falling back to DEFAULT
+            # configparser section proxy includes defaults, so this is simpler:
+            section_proxy = self.config[section_name]
+            for key in section_proxy:
+                 # Use self.get to ensure consistent value retrieval (like path expansion)
+                 section_dict[key] = self.get(section_name, key)
+
+            # Ensure keys defined ONLY in DEFAULT are not included unless explicitly requested via get_section('DEFAULT')
+            # The above loop correctly handles fallback, so section_dict contains the effective values for the section.
+
             logger.debug(f"Retrieved config section [{section_name}]: {section_dict}")
             return section_dict
         except Exception as e:
@@ -266,15 +387,14 @@ class DayhoffConfig:
         """Get all configuration sections and their key-value pairs."""
         all_config_dict = {}
         try:
-            # Include DEFAULT section explicitly if it exists
-            if 'DEFAULT' in self.config:
-                 default_section_data = self.get_section('DEFAULT')
-                 if default_section_data is not None:
-                     all_config_dict['DEFAULT'] = default_section_data
+            # Get the effective DEFAULTs first
+            default_section_data = self.get_section('DEFAULT')
+            if default_section_data is not None:
+                all_config_dict['DEFAULT'] = default_section_data
 
+            # Get all other sections
             for section_name in self.config.sections():
-                 # Skip DEFAULT as it might be handled differently by configparser sometimes
-                 # and we already added it if it exists.
+                 # Skip DEFAULT as we handled it above
                  if section_name == 'DEFAULT': continue
 
                  section_data = self.get_section(section_name)
@@ -288,19 +408,23 @@ class DayhoffConfig:
             return {}
 
     def get_available_sections(self) -> List[str]:
-        """Returns a list of available section names."""
-        # Ensure DEFAULT is included if present
+        """Returns a list of available section names, including DEFAULT."""
+        # configparser.sections() does not include DEFAULT
         sections = self.config.sections()
-        if 'DEFAULT' in self.config and 'DEFAULT' not in sections:
+        # Explicitly add 'DEFAULT' as it's conceptually a section for defaults
+        if 'DEFAULT' not in sections:
              sections.insert(0, 'DEFAULT')
         return sections
 
     def get_workflow_language(self) -> str:
         """Gets the configured default workflow language."""
+        # Use self.get which handles fallback to DEFAULT section automatically
         language = self.get('WORKFLOWS', 'default_workflow_type', default='cwl')
         if language not in ALLOWED_WORKFLOW_LANGUAGES:
-            logger.warning(f"Invalid workflow language '{language}' found in config ([WORKFLOWS].default_workflow_type). Falling back to default 'cwl'. Allowed: {', '.join(ALLOWED_WORKFLOW_LANGUAGES)}")
-            language = 'cwl' # Default language
+            # Find the default value from DEFAULT_CONFIG to fallback correctly
+            default_lang = self.DEFAULT_CONFIG.get('WORKFLOWS', {}).get('default_workflow_type', 'cwl')
+            logger.warning(f"Invalid workflow language '{language}' found in config ([WORKFLOWS].default_workflow_type). Falling back to default '{default_lang}'. Allowed: {', '.join(ALLOWED_WORKFLOW_LANGUAGES)}")
+            language = default_lang
         return language
 
     def get_workflow_executor(self, language: str) -> Optional[str]:
@@ -312,15 +436,21 @@ class DayhoffConfig:
         config_key = get_executor_config_key(language)
         allowed_execs = ALLOWED_EXECUTORS.get(language, [])
 
-        # Determine a sensible default if not found in config or if invalid
-        default_executor = self.DEFAULT_CONFIG['WORKFLOWS'].get(config_key)
+        # Determine the ultimate default value from DEFAULT_CONFIG
+        default_executor = self.DEFAULT_CONFIG.get('WORKFLOWS', {}).get(config_key)
 
+        # Use self.get to retrieve the value, falling back to the default if necessary
         executor = self.get('WORKFLOWS', config_key, default=default_executor)
 
         # Validate against the allowed list for this language
         if executor not in allowed_execs:
             logger.warning(f"Invalid executor '{executor}' configured for language '{language}' ([WORKFLOWS].{config_key}). Falling back to default '{default_executor}'. Allowed: {', '.join(allowed_execs)}")
-            executor = default_executor # Fallback to default
+            executor = default_executor # Fallback to default from DEFAULT_CONFIG
+
+        # Final check if default_executor itself was invalid (shouldn't happen with current setup)
+        if executor not in allowed_execs:
+             logger.error(f"Default executor '{executor}' for language '{language}' is invalid. Allowed: {', '.join(allowed_execs)}. Please check DEFAULT_CONFIG.")
+             return None # Or raise an error
 
         logger.debug(f"Using executor '{executor}' for language '{language}'")
         return executor
@@ -328,11 +458,16 @@ class DayhoffConfig:
     def get_llm_config(self) -> Dict[str, Optional[str]]:
         """Retrieves LLM configuration, checking environment variables for API key."""
         section_name = 'LLM'
-        # Use self.get with defaults from DEFAULT_CONFIG
-        provider = self.get(section_name, 'provider', self.DEFAULT_CONFIG[section_name]['provider'])
-        config_api_key = self.get(section_name, 'api_key', self.DEFAULT_CONFIG[section_name]['api_key'])
-        model = self.get(section_name, 'model', self.DEFAULT_CONFIG[section_name]['model'])
-        base_url = self.get(section_name, 'base_url', self.DEFAULT_CONFIG[section_name]['base_url'])
+        # Use self.get with defaults derived from DEFAULT_CONFIG
+        default_provider = self.DEFAULT_CONFIG[section_name]['provider']
+        default_api_key = self.DEFAULT_CONFIG[section_name]['api_key']
+        default_model = self.DEFAULT_CONFIG[section_name]['model']
+        default_base_url = self.DEFAULT_CONFIG[section_name]['base_url']
+
+        provider = self.get(section_name, 'provider', default_provider)
+        config_api_key = self.get(section_name, 'api_key', default_api_key)
+        model = self.get(section_name, 'model', default_model)
+        base_url = self.get(section_name, 'base_url', default_base_url)
 
         # Determine final API key: prioritize environment variable, then config
         api_key = None
@@ -344,7 +479,9 @@ class DayhoffConfig:
             api_key = config_api_key
             logger.info(f"Using LLM API key from config file [{section_name}].api_key")
         else:
-            logger.warning(f"LLM API key not found in config section [{section_name}] key 'api_key' or environment variable {env_var_name}")
+            # Only warn if the provider actually requires a key (most do)
+            if provider in LLM_API_KEY_ENV_VARS: # Check if we expect a key for this provider
+                 logger.warning(f"LLM API key not found in config section [{section_name}] key 'api_key' or environment variable {env_var_name}")
 
         # Determine final base URL: use config value if set, otherwise use provider default
         final_base_url = base_url
@@ -361,4 +498,8 @@ class DayhoffConfig:
 
 
 # Global config instance
+# Initialize DayhoffConfig only once
+# Ensure logger is configured before initializing config if config uses logging during init
+# Basic logging config for bootstrap phase if needed:
+# logging.basicConfig(level=logging.INFO)
 config = DayhoffConfig()
