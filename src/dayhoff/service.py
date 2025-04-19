@@ -22,7 +22,7 @@ from rich.spinner import Spinner
 
 # --- Core Components ---
 # Import the GLOBAL config instance and renamed ALLOWED_WORKFLOW_LANGUAGES
-from .config import config, DayhoffConfig, ALLOWED_WORKFLOW_LANGUAGES, ALLOWED_EXECUTORS, get_executor_config_key, ALLOWED_LLM_PROVIDERS # Updated import
+from .config import config, DayhoffConfig, ALLOWED_WORKFLOW_LANGUAGES, ALLOWED_EXECUTORS, get_executor_config_key, ALLOWED_LLM_PROVIDERS, ALLOWED_EXECUTION_MODES # Updated import
 # Removed GitTracker import as /git_* commands are removed
 
 # --- File System ---
@@ -158,6 +158,9 @@ class DayhoffService:
 
         # Generate LLM provider help dynamically
         llm_provider_help = f"Allowed providers: {', '.join(ALLOWED_LLM_PROVIDERS)}"
+        # Generate Execution mode help dynamically
+        execution_mode_help = f"Allowed modes: {', '.join(ALLOWED_EXECUTION_MODES)}"
+
 
         return {
             "help": {"handler": self._handle_help, "help": "Show help for commands. Usage: /help [command_name]"},
@@ -180,7 +183,10 @@ class DayhoffService:
                       get <section> <key> [default] : Get a specific config value.
                       set <section> <key> <value>   : Set a config value (and save). Type '/config set' for examples.
                       save                          : Manually save the current configuration.
-                      show [section|ssh|llm]        : Show a specific section, 'ssh' (HPC), 'llm', or all config.
+                      show [section|ssh|llm|hpc|all]: Show a specific section, 'ssh' (HPC subset), 'llm', 'hpc', or all config.
+                    HPC Settings (Section: HPC):
+                      execution_mode <mode>         : Set execution mode ('direct' or 'slurm'). {execution_mode_help}
+                      slurm_use_singularity <bool>  : Default to using Singularity for Slurm jobs (true/false).
                     Workflow Settings (Section: WORKFLOWS):
                       default_workflow_type <lang>  : Set preferred language. Use '/language <lang>' command.
                     {executor_help_text}
@@ -194,11 +200,28 @@ class DayhoffService:
             "fs_head": {"handler": self._handle_fs_head, "help": "Show the first N lines of a local file. Usage: /fs_head <file_path> [num_lines=10]"},
             "hpc_connect": {"handler": self._handle_hpc_connect, "help": "Establish a persistent SSH connection to the HPC. Usage: /hpc_connect"},
             "hpc_disconnect": {"handler": self._handle_hpc_disconnect, "help": "Close the persistent SSH connection to the HPC. Usage: /hpc_disconnect"},
-            "hpc_run": {"handler": self._handle_hpc_run, "help": "Execute a command on the HPC using the active connection. Usage: /hpc_run <command_string>"},
-            "hpc_slurm_run": {"handler": self._handle_hpc_slurm_run, "help": "Execute a command within a Slurm allocation (srun). Usage: /hpc_slurm_run <command_string>"},
+            "hpc_run": {
+                "handler": self._handle_hpc_run,
+                "help": textwrap.dedent("""\
+                    Execute a command on the HPC using the active connection.
+                    Behavior depends on HPC.execution_mode config:
+                      'direct': Runs the command directly via SSH.
+                      'slurm': Wraps the command in 'srun --pty' for execution via Slurm.
+                    Usage: /hpc_run <command_string>""")
+            },
+            "hpc_slurm_run": {"handler": self._handle_hpc_slurm_run, "help": "Execute a command explicitly within a Slurm allocation (srun). Usage: /hpc_slurm_run <command_string>"},
             "ls": {"handler": self._handle_ls, "help": "List files in the current directory (local or remote) with colors. Usage: /ls [ls_options_ignored]"}, # Updated help
             "cd": {"handler": self._handle_cd, "help": "Change the current directory (local or remote). Usage: /cd <directory>"}, # Updated help
-            "hpc_slurm_submit": {"handler": self._handle_hpc_slurm_submit, "help": "Submit a Slurm job script. Usage: /hpc_slurm_submit <script_path> [options_json]"},
+            "hpc_slurm_submit": {
+                "handler": self._handle_hpc_slurm_submit,
+                "help": textwrap.dedent("""\
+                    Submit a Slurm job script.
+                    Usage: /hpc_slurm_submit <script_path> [options_json]
+                      script_path : Path to the local Slurm script file.
+                      options_json: Optional Slurm options as JSON string (e.g., '{"--nodes": 1, "--time": "01:00:00"}').
+                                    Can include runner flags like '--singularity' or '--docker'.
+                                    If HPC.slurm_use_singularity is true and no container flag is given, '--singularity' will be added by default.""")
+            },
             "hpc_slurm_status": {
                 "handler": self._handle_hpc_slurm_status,
                 "help": textwrap.dedent("""\
@@ -229,12 +252,14 @@ class DayhoffService:
 
     def get_status(self) -> Dict[str, Any]:
         """Returns the current connection status and context."""
+        exec_mode = self.config.get_execution_mode()
         if self.active_ssh_manager and self.active_ssh_manager.is_connected:
             return {
                 "mode": "connected",
                 "host": self.active_ssh_manager.host,
                 "user": self.active_ssh_manager.username,
                 "cwd": self.remote_cwd or "~", # Provide default if None
+                "exec_mode": exec_mode, # Add execution mode status
             }
         else:
             return {
@@ -242,6 +267,7 @@ class DayhoffService:
                 "host": None,
                 "user": None,
                 "cwd": self.local_cwd,
+                "exec_mode": exec_mode, # Add execution mode status
             }
 
     def execute_command(self, command: str, args: List[str]) -> Any:
@@ -314,12 +340,14 @@ class DayhoffService:
             current_executor = self.config.get_workflow_executor(current_language) or "N/A"
             llm_provider = self.config.get('LLM', 'provider', 'N/A')
             llm_model = self.config.get('LLM', 'model', 'N/A')
+            exec_mode = status['exec_mode'] # Get from status
 
             # Build status line
             if status['mode'] == 'connected':
                 status_line = f"Mode: [bold green]Connected[/] ({status['user']}@{status['host']}:{status['cwd']})"
             else:
                 status_line = f"Mode: [bold yellow]Local[/] ({status['cwd']})"
+            status_line += f" | Exec: [bold]{exec_mode}[/]" # Add exec mode
 
 
             console.print(Panel(
@@ -369,20 +397,23 @@ class DayhoffService:
             cmd_name = args[0].lstrip('/')
             if cmd_name in self._command_map:
                 # Use argparse's help printing mechanism for commands that use it heavily
-                if cmd_name in ['config', 'test', 'language', 'hpc_slurm_status', 'fs_head', 'hpc_connect', 'hpc_disconnect', 'hpc_run', 'hpc_slurm_run', 'ls', 'cd', 'hpc_slurm_submit', 'hpc_cred_get', 'wf_gen']:
-                     try:
-                         # Call the handler with '--help'
-                         self._command_map[cmd_name]['handler'](['--help'])
-                     except SystemExit: # Argparse calls sys.exit on --help
-                         pass # Expected behavior, help was printed
-                     except argparse.ArgumentError as e: # Handle cases where --help isn't the first arg
-                         console.print(f"[error]Error showing help for {cmd_name}:[/error] {e}")
-                     except Exception as e:
-                          logger.error(f"Unexpected error showing help for {cmd_name}", exc_info=True)
-                          console.print(f"[error]Could not display help for {cmd_name}:[/error] {e}")
-                else:
-                    # Print the stored help string for simpler commands (like help itself)
+                # Check if the handler uses argparse (heuristic: check for ArgumentParser creation or specific commands)
+                # For simplicity, assume all handlers might use it or print their own help
+                try:
+                    # Call the handler with '--help'
+                    self._command_map[cmd_name]['handler'](['--help'])
+                except SystemExit: # Argparse calls sys.exit on --help
+                    pass # Expected behavior, help was printed
+                except argparse.ArgumentError as e: # Handle cases where --help isn't the first arg or other parse errors
+                    # If ArgumentError occurs, print the stored help string as fallback
+                    logger.debug(f"ArgumentError showing help for {cmd_name}, falling back to stored help string: {e}")
                     console.print(Panel(self._command_map[cmd_name]['help'], title=f"Help for /{cmd_name}", border_style="cyan"))
+                except Exception as e:
+                     logger.error(f"Unexpected error showing help for {cmd_name}", exc_info=True)
+                     # Fallback to stored help string on unexpected errors
+                     console.print(f"[warning]Could not display dynamic help for {cmd_name}. Showing basic help:[/warning]")
+                     console.print(Panel(self._command_map[cmd_name]['help'], title=f"Help for /{cmd_name}", border_style="cyan"))
+
                 return None # Output printed directly
             else:
                  console.print(f"[error]Unknown command:[/error] /{cmd_name}")
@@ -716,6 +747,7 @@ class DayhoffService:
 
         # --- Subparser: show ---
         parser_show = subparsers.add_parser("show", help="Show config sections.", add_help=True)
+        # Updated help text in _build_command_map reflects 'hpc' option
         parser_show.add_argument("section", nargs='?', default=None, help="Section name (e.g., HPC, LLM, ssh, all) or omit for all.")
 
 
@@ -731,21 +763,29 @@ class DayhoffService:
             # --- Execute subcommand logic ---
             if parsed_args.subcommand == "get":
                 # Use config.get which handles defaults and path expansion
-                value = self.config.get(parsed_args.section.upper(), parsed_args.key, parsed_args.default)
+                # Handle boolean explicitly if needed for display
+                section_upper = parsed_args.section.upper()
+                key_lower = parsed_args.key.lower()
+                if section_upper == 'HPC' and key_lower == 'slurm_use_singularity':
+                     value = self.config.getboolean(section_upper, key_lower, default=parsed_args.default)
+                else:
+                     value = self.config.get(section_upper, key_lower, parsed_args.default)
+
                 if value is not None:
                     if isinstance(value, (dict, list)): # Should not happen with INI, but maybe future formats
                         console.print_json(data=value)
                     else:
-                        console.print(str(value))
+                        console.print(str(value)) # Print string representation
                 else:
                     # config.get returns default (None here) if not found, so indicate that
-                    console.print(f"Key '[{parsed_args.section.upper()}].{parsed_args.key}' not found.", style="warning")
+                    console.print(f"Key '[{section_upper}].{key_lower}' not found.", style="warning")
 
             elif parsed_args.subcommand == "set":
                 section_upper = parsed_args.section.upper()
+                key_lower = parsed_args.key.lower() # Standardize key case for setting
                 try:
                     # config.set handles validation and saving
-                    self.config.set(section_upper, parsed_args.key, parsed_args.value)
+                    self.config.set(section_upper, key_lower, parsed_args.value)
                     # Invalidate cached LLM client if LLM settings changed
                     if section_upper == 'LLM':
                          self.llm_client = None
@@ -762,11 +802,11 @@ class DayhoffService:
                          else:
                              logger.info("HPC config changed. Any new connection will use the updated settings.")
 
-                    console.print(f"Config '[{section_upper}].{parsed_args.key}' set to '{parsed_args.value}' and saved.", style="info")
+                    console.print(f"Config '[{section_upper}].{key_lower}' set to '{parsed_args.value}' and saved.", style="info")
                 except ValueError as e: # Catch validation errors from config.set
                     console.print(f"[error]Validation Error:[/error] {e}")
                 except Exception as e:
-                    logger.error(f"Failed to set config [{section_upper}].{parsed_args.key}", exc_info=True)
+                    logger.error(f"Failed to set config [{section_upper}].{key_lower}", exc_info=True)
                     console.print(f"[error]Failed to set config:[/error] {e}")
 
             elif parsed_args.subcommand == "save":
@@ -801,7 +841,7 @@ class DayhoffService:
                          if 'key_filename' in display_data and display_data.get('auth_method') != 'key':
                               del display_data['key_filename'] # Don't show irrelevant key path
 
-                         console.print(Panel(json.dumps(display_data, indent=2), title="Interpreted SSH Configuration", border_style="cyan"))
+                         console.print(Panel(json.dumps(display_data, indent=2), title="Interpreted SSH Configuration (Subset of HPC)", border_style="cyan"))
                 elif section_name.lower() == 'llm':
                      config_data = self.config.get_llm_config() # Gets interpreted LLM config (checks env vars)
                      if not config_data:
@@ -811,6 +851,17 @@ class DayhoffService:
                          display_data = config_data.copy()
                          display_data['api_key'] = "[Set]" if display_data.get('api_key') else "[Not Set]"
                          console.print(Panel(json.dumps(display_data, indent=2), title="Interpreted LLM Configuration", border_style="cyan"))
+                elif section_name.lower() == 'hpc': # Show the full HPC section
+                     section_upper = 'HPC'
+                     config_data = self.config.get_section(section_upper)
+                     if config_data is None:
+                         console.print(f"Configuration section '[{section_upper}]' not found.", style="warning")
+                     else:
+                         display_data = config_data.copy()
+                         # Mask password if present
+                         if 'password' in display_data: display_data['password'] = "[Set]" if display_data['password'] else "[Not Set]"
+                         console.print(Panel(json.dumps(display_data, indent=2), title=f"Configuration Section [{section_upper}]", border_style="cyan"))
+
                 else:
                     # Show specific section
                     section_upper = section_name.upper()
@@ -823,6 +874,8 @@ class DayhoffService:
                          display_data = config_data.copy()
                          if section_upper == 'LLM' and 'api_key' in display_data:
                              display_data['api_key'] = "[Set]" if display_data.get('api_key') else "[Not Set]"
+                         if section_upper == 'HPC' and 'password' in display_data:
+                             display_data['password'] = "[Set]" if display_data.get('password') else "[Not Set]"
                          # Add other masking if needed
 
                          console.print(Panel(json.dumps(display_data, indent=2), title=f"Configuration Section [{section_upper}]", border_style="cyan"))
@@ -1026,7 +1079,8 @@ class DayhoffService:
 
                 self.active_ssh_manager = ssh_manager
                 self.remote_cwd = initial_cwd # Set remote CWD
-                console.print(f"Successfully connected to HPC host: {hostname} (user: {ssh_manager.username}, cwd: {self.remote_cwd}).", style="bold green")
+                exec_mode = self.config.get_execution_mode() # Get current exec mode
+                console.print(f"Successfully connected to HPC host: {hostname} (user: {ssh_manager.username}, cwd: {self.remote_cwd}, exec_mode: {exec_mode}).", style="bold green")
                 return None
 
             except (ConnectionError, TimeoutError, RuntimeError, ValueError) as e:
@@ -1081,7 +1135,7 @@ class DayhoffService:
 
 
     def _handle_hpc_run(self, args: List[str]) -> Optional[str]:
-        """Executes a command using the active persistent SSH connection. Prints output."""
+        """Executes a command using the active persistent SSH connection, respecting execution_mode. Prints output."""
         parser = self._create_parser("hpc_run", self._command_map['hpc_run']['help'], add_help=True)
         # Use REMAINDER to capture the full command string
         parser.add_argument("command_string", nargs=argparse.REMAINDER, help="The command and arguments to execute remotely.")
@@ -1095,48 +1149,61 @@ class DayhoffService:
             if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
                 raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
             if self.remote_cwd is None: # Check for None specifically
-                 # Try to reconnect or get CWD? For now, require connect.
                  raise ConnectionError("Remote working directory unknown. Please use /hpc_connect again.")
 
-            # Join the command parts, quoting each argument
-            command_to_run = " ".join(shlex.quote(arg) for arg in parsed_args.command_string)
-            # Prepend 'cd' to the command to ensure execution in the correct directory
-            full_command = f"cd {shlex.quote(self.remote_cwd)} && {command_to_run}"
+            # Get execution mode from config
+            exec_mode = self.config.get_execution_mode()
+            user_command = " ".join(shlex.quote(arg) for arg in parsed_args.command_string)
+            command_to_run = ""
+            exec_via = "" # For logging
+
+            if exec_mode == 'slurm':
+                # Wrap in srun
+                srun_command = f"srun --pty {user_command}"
+                command_to_run = f"cd {shlex.quote(self.remote_cwd)} && {srun_command}"
+                exec_via = "srun"
+                logger.info(f"Executing command via {exec_via} due to execution_mode='slurm': {command_to_run}")
+                # Use a longer timeout for potential Slurm allocation delays
+                timeout = 600 # 10 min timeout
+            else: # Default to 'direct'
+                command_to_run = f"cd {shlex.quote(self.remote_cwd)} && {user_command}"
+                exec_via = "direct SSH"
+                logger.info(f"Executing command via {exec_via} due to execution_mode='direct': {command_to_run}")
+                timeout = 300 # 5 min timeout
 
             try:
-                logger.info(f"Executing command via active SSH connection: {full_command}")
-                # Consider adding a timeout parameter to execute_command if available
-                output = self.active_ssh_manager.execute_command(full_command, timeout=300) # 5 min timeout
+                output = self.active_ssh_manager.execute_command(command_to_run, timeout=timeout)
                 # Print the raw output
                 if output:
                      console.print(output)
                 else:
-                     console.print("(Command produced no output)", style="dim")
+                     console.print(f"(Command via {exec_via} produced no output)", style="dim")
                 return None # Output printed directly
 
             except ConnectionError as e:
-                logger.error(f"Connection error during /hpc_run: {e}", exc_info=False)
-                # Attempt to clean up the stale connection
+                logger.error(f"Connection error during /hpc_run (via {exec_via}): {e}", exc_info=False)
                 try: self.active_ssh_manager.disconnect()
                 except Exception: pass
                 self.active_ssh_manager = None
                 self.remote_cwd = None
-                raise ConnectionError(f"Connection error during command execution: {e}. Connection closed.") from e
+                raise ConnectionError(f"Connection error during command execution (via {exec_via}): {e}. Connection closed.") from e
             except TimeoutError as e:
-                 logger.error(f"Timeout error during /hpc_run: {e}", exc_info=False)
-                 raise TimeoutError(f"Remote command execution timed out: {e}") from e
+                 logger.error(f"Timeout error during /hpc_run (via {exec_via}, timeout={timeout}s): {e}", exc_info=False)
+                 raise TimeoutError(f"Remote command execution (via {exec_via}) timed out after {timeout} seconds: {e}") from e
             except RuntimeError as e:
-                 logger.error(f"Runtime error during /hpc_run: {e}", exc_info=False)
-                 # Check if the error indicates the remote CWD is invalid
-                 if "No such file or directory" in str(e) and self.remote_cwd in str(e):
+                 logger.error(f"Runtime error during /hpc_run (via {exec_via}): {e}", exc_info=False)
+                 # Check for common errors
+                 if exec_mode == 'slurm' and "srun: error:" in str(e):
+                     raise RuntimeError(f"Slurm execution failed: {e}") from e
+                 elif "No such file or directory" in str(e) and self.remote_cwd in str(e):
                      logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid based on error. Resetting to '~'.")
                      old_cwd = self.remote_cwd
                      self.remote_cwd = "~" # Reset to home as a guess
                      raise RuntimeError(f"Remote directory '{old_cwd}' likely invalid. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
                  raise e # Re-raise other runtime errors
             except Exception as e:
-                logger.error(f"Unexpected error executing command via active SSH connection: {e}", exc_info=True)
-                raise RuntimeError(f"Unexpected error executing remote command: {e}") from e
+                logger.error(f"Unexpected error executing command via {exec_via}: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected error executing remote command (via {exec_via}): {e}") from e
 
         except argparse.ArgumentError as e:
              raise e
@@ -1145,7 +1212,8 @@ class DayhoffService:
 
 
     def _handle_hpc_slurm_run(self, args: List[str]) -> Optional[str]:
-        """Executes a command within a Slurm allocation (srun). Prints output."""
+        """Executes a command explicitly within a Slurm allocation (srun). Prints output."""
+        # This command ignores the execution_mode setting.
         parser = self._create_parser("hpc_slurm_run", self._command_map['hpc_slurm_run']['help'], add_help=True)
         parser.add_argument("command_string", nargs=argparse.REMAINDER, help="The command and arguments to execute via srun.")
 
@@ -1164,41 +1232,41 @@ class DayhoffService:
             # Use --pty for interactive-like behavior if possible
             srun_command = f"srun --pty {user_command}"
             full_command = f"cd {shlex.quote(self.remote_cwd)} && {srun_command}"
+            timeout = 600 # 10 min timeout
 
             try:
-                logger.info(f"Executing command via srun using active SSH connection: {full_command}")
-                # srun might take longer, use a generous timeout
-                output = self.active_ssh_manager.execute_command(full_command, timeout=600) # 10 min timeout
+                logger.info(f"Executing command explicitly via srun using active SSH connection: {full_command}")
+                output = self.active_ssh_manager.execute_command(full_command, timeout=timeout)
                 if output:
                      console.print(output)
                 else:
-                     console.print("(srun command produced no output)", style="dim")
+                     console.print("(Explicit srun command produced no output)", style="dim")
                 return None # Output printed
 
             except ConnectionError as e:
-                logger.error(f"Connection error during /hpc_slurm_run: {e}", exc_info=False)
+                logger.error(f"Connection error during explicit /hpc_slurm_run: {e}", exc_info=False)
                 try: self.active_ssh_manager.disconnect()
                 except Exception: pass
                 self.active_ssh_manager = None
                 self.remote_cwd = None
-                raise ConnectionError(f"Connection error during srun execution: {e}. Connection closed.") from e
+                raise ConnectionError(f"Connection error during explicit srun execution: {e}. Connection closed.") from e
             except TimeoutError as e:
-                 logger.error(f"Timeout error during /hpc_slurm_run (timeout=600s): {e}", exc_info=False)
-                 raise TimeoutError(f"Command execution via srun timed out after 600 seconds: {e}") from e
+                 logger.error(f"Timeout error during explicit /hpc_slurm_run (timeout={timeout}s): {e}", exc_info=False)
+                 raise TimeoutError(f"Explicit command execution via srun timed out after {timeout} seconds: {e}") from e
             except RuntimeError as e:
-                 logger.error(f"Runtime error during /hpc_slurm_run: {e}", exc_info=False)
+                 logger.error(f"Runtime error during explicit /hpc_slurm_run: {e}", exc_info=False)
                  if "srun: error:" in str(e):
                      # Specific Slurm error
-                     raise RuntimeError(f"Slurm execution failed: {e}") from e
+                     raise RuntimeError(f"Explicit Slurm execution failed: {e}") from e
                  elif "No such file or directory" in str(e) and self.remote_cwd in str(e):
-                     logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid for srun. Resetting to '~'.")
+                     logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid for explicit srun. Resetting to '~'.")
                      old_cwd = self.remote_cwd
                      self.remote_cwd = "~"
-                     raise RuntimeError(f"Remote directory '{old_cwd}' likely invalid for srun. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
+                     raise RuntimeError(f"Remote directory '{old_cwd}' likely invalid for explicit srun. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
                  raise e # Re-raise other runtime errors
             except Exception as e:
-                logger.error(f"Unexpected error executing command via srun: {e}", exc_info=True)
-                raise RuntimeError(f"Unexpected error executing remote srun command: {e}") from e
+                logger.error(f"Unexpected error executing explicit command via srun: {e}", exc_info=True)
+                raise RuntimeError(f"Unexpected error executing explicit remote srun command: {e}") from e
 
         except argparse.ArgumentError as e:
              raise e
@@ -1385,7 +1453,7 @@ class DayhoffService:
 
 
     def _handle_hpc_slurm_submit(self, args: List[str]) -> Optional[str]:
-        """Submits a Slurm job script. Prints output."""
+        """Submits a Slurm job script, potentially adding --singularity. Prints output."""
         parser = self._create_parser("hpc_slurm_submit", self._command_map['hpc_slurm_submit']['help'], add_help=True)
         parser.add_argument("script_path", help="Path to the local Slurm script file")
         parser.add_argument("options_json", nargs='?', default='{}', help="Optional Slurm options as JSON string (e.g., '{\"--nodes\": 1, \"--time\": \"01:00:00\"}')")
@@ -1394,9 +1462,13 @@ class DayhoffService:
         try:
             parsed_args = parser.parse_args(args)
 
-            options = json.loads(parsed_args.options_json)
-            if not isinstance(options, dict):
-                raise ValueError("Options JSON must decode to a dictionary.")
+            # Parse user-provided options
+            try:
+                user_options = json.loads(parsed_args.options_json)
+                if not isinstance(user_options, dict):
+                    raise ValueError("Options JSON must decode to a dictionary.")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON provided for options: {e}") from e
 
             # Resolve script path relative to local CWD
             script_path_obj = (Path(self.local_cwd) / parsed_args.script_path).resolve()
@@ -1408,21 +1480,47 @@ class DayhoffService:
             with open(script_path, 'r') as f:
                 script_content = f.read()
 
+            # --- Handle Singularity Option ---
+            job_options = user_options.copy() # Start with user options
+            use_singularity_config = self.config.get_slurm_use_singularity()
+            singularity_flag = "--singularity" # Assuming cwltool-like flag
+            docker_flag = "--docker" # Assuming cwltool-like flag
+
+            # Check if user explicitly set a container flag
+            user_set_singularity = singularity_flag in job_options
+            user_set_docker = docker_flag in job_options
+
+            if use_singularity_config and not user_set_singularity and not user_set_docker:
+                # Config says use singularity, and user didn't specify singularity or docker
+                # Check if user explicitly disabled singularity (e.g., "--singularity false")
+                singularity_value = job_options.get(singularity_flag)
+                if not (isinstance(singularity_value, bool) and not singularity_value): # Add if not explicitly set to false
+                    logger.info(f"Adding '{singularity_flag}' to job options based on config (slurm_use_singularity=True)")
+                    job_options[singularity_flag] = True # Add the flag
+            elif not use_singularity_config and not user_set_singularity and not user_set_docker:
+                 logger.info(f"Not adding '{singularity_flag}' to job options based on config (slurm_use_singularity=False)")
+            elif user_set_singularity:
+                 logger.info(f"User explicitly provided '{singularity_flag}' in options_json: {job_options[singularity_flag]}")
+            elif user_set_docker:
+                 logger.info(f"User explicitly provided '{docker_flag}' in options_json, not adding '{singularity_flag}'.")
+            # --- End Handle Singularity Option ---
+
+
             slurm_manager = self._get_slurm_manager() # Gets manager with active (or temp) SSH
 
-            logger.info(f"Submitting Slurm job from script: {script_path} with options: {options}")
+            logger.info(f"Submitting Slurm job from script: {script_path} with effective options: {job_options}")
             console.print(f"Submitting Slurm job from '{os.path.basename(script_path)}'...", style="info")
 
-            job_id = slurm_manager.submit_job(script_content, options)
+            job_id = slurm_manager.submit_job(script_content, job_options)
             console.print(f"Slurm job submitted with ID: {job_id}", style="bold green")
             return None # Output printed
 
         except argparse.ArgumentError as e: raise e
         except SystemExit: return None # Help printed
         except FileNotFoundError as e: raise e
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON provided for options: {e}") from e
-        except (ConnectionError, ValueError, RuntimeError) as e:
+        except ValueError as e: # Catches JSON errors and dict validation
+            raise e
+        except (ConnectionError, RuntimeError) as e:
             # Catch errors from _get_slurm_manager or submit_job
             raise e # Re-raise for execute_command
         except Exception as e:

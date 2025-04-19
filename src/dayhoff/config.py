@@ -11,6 +11,7 @@ ALLOWED_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 ALLOWED_AUTH_METHODS = ['key', 'password']
 ALLOWED_WORKFLOW_LANGUAGES = ['cwl', 'nextflow', 'snakemake', 'wdl']
 ALLOWED_LLM_PROVIDERS = ['openai', 'anthropic', 'openrouter'] # Add more as needed
+ALLOWED_EXECUTION_MODES = ['direct', 'slurm'] # New: Allowed modes for execution
 
 # Mapping from workflow language to allowed executor tools/platforms
 ALLOWED_EXECUTORS: Mapping[str, List[str]] = {
@@ -58,6 +59,8 @@ class DayhoffConfig:
             'known_hosts': '~/.ssh/known_hosts',
             'remote_root': '.',
             'credential_system': 'dayhoff_hpc',
+            'execution_mode': 'direct', # New: 'direct' or 'slurm'
+            'slurm_use_singularity': 'True', # New: Default to using singularity with slurm jobs
         },
         'WORKFLOWS': {
             'default_workflow_type': 'cwl',
@@ -80,12 +83,17 @@ class DayhoffConfig:
         self.config = configparser.ConfigParser(
             defaults=self.DEFAULT_CONFIG['DEFAULT'],
             inline_comment_prefixes=('#', ';'),
-            interpolation=None
+            interpolation=None,
+            converters={'boolean': self._parse_boolean} # Add boolean converter
         )
         self.config_path = self._get_config_path(config_path_override)
 
         # Load existing or create default config
         self._load_or_create_config()
+
+    def _parse_boolean(self, value: str) -> bool:
+        """Custom boolean converter for configparser."""
+        return value.lower() in ('true', 'yes', '1', 'on')
 
     def _get_config_path(self, config_path_override: Optional[str] = None) -> Path:
         """Determines the configuration file path, prioritizing override, then env var, then default."""
@@ -228,6 +236,12 @@ class DayhoffConfig:
         logger.debug(f"Config get [{section}].{key}: returning '{value}'")
         return value
 
+    def getboolean(self, section: str, key: str, default: bool = False) -> bool:
+        """Get a boolean configuration value."""
+        # Use the custom boolean converter
+        return self.config.getboolean(section, key, fallback=default)
+
+
     def _find_key_location(self, key_to_find: str) -> tuple[Optional[str], Optional[str]]:
         """Helper to find if a key exists in any section, starting from DEFAULT."""
         # Check DEFAULT first
@@ -261,6 +275,14 @@ class DayhoffConfig:
         if section == 'HPC':
             if key == 'auth_method' and str_value not in ALLOWED_AUTH_METHODS:
                 validation_error = f"Invalid auth_method '{str_value}'. Allowed: {', '.join(ALLOWED_AUTH_METHODS)}"
+            if key == 'execution_mode' and str_value not in ALLOWED_EXECUTION_MODES: # New validation
+                validation_error = f"Invalid execution_mode '{str_value}'. Allowed: {', '.join(ALLOWED_EXECUTION_MODES)}"
+            if key == 'slurm_use_singularity': # New validation (check if boolean-like)
+                 try:
+                     self._parse_boolean(str_value)
+                 except ValueError:
+                     validation_error = f"Invalid boolean value for slurm_use_singularity: '{str_value}'. Use true/false, yes/no, 1/0."
+
         elif section == 'WORKFLOWS':
             if key == 'default_workflow_type' and str_value not in ALLOWED_WORKFLOW_LANGUAGES:
                 validation_error = f"Invalid default_workflow_type '{str_value}'. Allowed: {', '.join(ALLOWED_WORKFLOW_LANGUAGES)}"
@@ -297,6 +319,7 @@ class DayhoffConfig:
                 ssh_settings['known_hosts'] = self.get(section_name, 'known_hosts', '~/.ssh/known_hosts') # Expanded by get
                 ssh_settings['remote_root'] = self.get(section_name, 'remote_root', '.')
                 ssh_settings['credential_system'] = self.get(section_name, 'credential_system', 'dayhoff_hpc')
+                # execution_mode and slurm_use_singularity are retrieved via specific getters
 
                 # Construct full path for ssh_key if using key auth
                 if ssh_settings['auth_method'] == 'key' and ssh_settings['ssh_key_dir'] and ssh_settings['ssh_key']:
@@ -343,7 +366,11 @@ class DayhoffConfig:
         if section_name == 'DEFAULT':
             # Return the effective defaults
             logger.debug(f"Retrieving effective defaults for [DEFAULT] section.")
-            return dict(self.config.defaults())
+            # Use a temporary parser to get interpolated defaults if needed, or just return raw defaults
+            # For simplicity, return the raw defaults stored in the parser
+            # Convert values to string for consistency with other sections
+            return {k: str(v) for k, v in self.config.defaults().items()}
+
 
         if not self.config.has_section(section_name):
             logger.warning(f"Configuration section [{section_name}] not found.")
@@ -357,6 +384,9 @@ class DayhoffConfig:
                      str_value = str(value)
                      if (section_name == 'HPC' and key in ['ssh_key_dir', 'known_hosts']):
                          section_defaults[key] = str(Path(str_value).expanduser())
+                     # Handle boolean conversion for display if needed, but get_section usually returns strings
+                     # elif (section_name == 'HPC' and key == 'slurm_use_singularity'):
+                     #     section_defaults[key] = str(self._parse_boolean(str_value)) # Return 'True' or 'False' string
                      else:
                          section_defaults[key] = str_value
                  return section_defaults
@@ -372,7 +402,11 @@ class DayhoffConfig:
             section_proxy = self.config[section_name]
             for key in section_proxy:
                  # Use self.get to ensure consistent value retrieval (like path expansion)
-                 section_dict[key] = self.get(section_name, key)
+                 # For boolean values, use getboolean to show True/False consistently
+                 if section_name == 'HPC' and key == 'slurm_use_singularity':
+                     section_dict[key] = str(self.getboolean(section_name, key)) # Get boolean then convert back to string
+                 else:
+                     section_dict[key] = self.get(section_name, key) # Get potentially expanded string value
 
             # Ensure keys defined ONLY in DEFAULT are not included unless explicitly requested via get_section('DEFAULT')
             # The above loop correctly handles fallback, so section_dict contains the effective values for the section.
@@ -495,6 +529,29 @@ class DayhoffConfig:
             'model': model,
             'base_url': final_base_url or None, # Return None if still empty
         }
+
+    # --- New Getters for Execution Settings ---
+
+    def get_execution_mode(self) -> str:
+        """Gets the configured execution mode ('direct' or 'slurm')."""
+        section = 'HPC'
+        key = 'execution_mode'
+        default_mode = self.DEFAULT_CONFIG.get(section, {}).get(key, 'direct')
+        mode = self.get(section, key, default=default_mode)
+        if mode not in ALLOWED_EXECUTION_MODES:
+            logger.warning(f"Invalid execution mode '{mode}' found in config ([{section}].{key}). Falling back to default '{default_mode}'. Allowed: {', '.join(ALLOWED_EXECUTION_MODES)}")
+            mode = default_mode
+        return mode
+
+    def get_slurm_use_singularity(self) -> bool:
+        """Gets the configured preference for using Singularity with Slurm jobs."""
+        section = 'HPC'
+        key = 'slurm_use_singularity'
+        # Get the default value string from DEFAULT_CONFIG and parse it
+        default_value_str = self.DEFAULT_CONFIG.get(section, {}).get(key, 'True')
+        default_value = self._parse_boolean(default_value_str)
+        # Use getboolean which handles fallback and uses the converter
+        return self.getboolean(section, key, default=default_value)
 
 
 # Global config instance
