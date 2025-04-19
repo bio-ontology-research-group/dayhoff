@@ -45,10 +45,16 @@ except ImportError:
     LLM_CLIENTS_AVAILABLE = False
     # Define placeholder Protocol for type hinting if imports fail
     class LLMClient(Protocol):
-        def generate(self, prompt: str, max_tokens: int = 150, temperature: float = 0.7, **kwargs) -> str:
+        # Update protocol to match expected generate signature better
+        def generate(self, prompt: str, context: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
             ...
-    class OpenAIClient(LLMClient): pass
-    class AnthropicClient(LLMClient): pass
+        def get_usage(self) -> Dict[str, int]:
+            ...
+    # Define placeholder classes inheriting from the protocol
+    class OpenAIClient(LLMClient):
+         def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, default_model: Optional[str] = None): ...
+    class AnthropicClient(LLMClient):
+         def __init__(self, api_key: Optional[str] = None, default_model: Optional[str] = None, base_url: Optional[str] = None): ...
     # Log warning only once during initialization
     logging.getLogger(__name__).warning("LLM client libraries not found or import failed. LLM features will be unavailable.")
 
@@ -526,18 +532,21 @@ class DayhoffService:
             test_prompt = "Briefly explain the concept of bioinformatics in one sentence."
             console.print(f"  Sending test prompt to model '{llm_config.get('model')}'...")
 
-            response = None
+            response_data = None
             error_message = None
             start_time = time.time()
 
             # Use Rich Live display for spinner
             with Live(Spinner("dots", text="Waiting for LLM response..."), console=console, transient=True, refresh_per_second=10) as live:
                 try:
-                    # Assuming a simple 'generate' method - adjust based on actual client interface
-                    # Add a timeout mechanism if the client doesn't support it natively
-                    # This is a placeholder; a real implementation might use threading or asyncio
-                    # For simplicity, we'll rely on potential underlying HTTP client timeouts
-                    response = client.generate(test_prompt, max_tokens=50, temperature=0.1) # Short response expected
+                    # Pass parameters expected by the client's generate method
+                    # Use a short max_tokens for the test
+                    response_data = client.generate(
+                        prompt=test_prompt,
+                        max_tokens=50,
+                        temperature=0.1,
+                        model=llm_config.get('model') # Explicitly pass model if needed by generate
+                    )
                 except Exception as e:
                     error_message = str(e)
                     logger.error(f"LLM API call failed: {e}", exc_info=True)
@@ -549,12 +558,23 @@ class DayhoffService:
                  console.print(f"[error]LLM API call failed:[/error] {error_message}")
                  return # Stop test on API error
 
-            if response and isinstance(response, str) and response.strip():
-                 console.print(Panel(response.strip(), title="LLM Response", border_style="green", expand=False))
-                 console.print("[bold green]✅ LLM Test Successful[/bold green]")
+            # Check the structure of the response_data dictionary
+            if response_data and isinstance(response_data, dict):
+                 response_text = response_data.get('response')
+                 tokens_used = response_data.get('tokens_used')
+                 model_used = response_data.get('model_used', llm_config.get('model')) # Fallback to configured model
+
+                 if response_text and isinstance(response_text, str) and response_text.strip():
+                     console.print(Panel(response_text.strip(), title=f"LLM Response (from {model_used})", border_style="green", expand=False))
+                     if tokens_used is not None:
+                         console.print(f"  Tokens used: {tokens_used}", style="dim")
+                     console.print("[bold green]✅ LLM Test Successful[/bold green]")
+                 else:
+                     console.print("[warning]LLM Test Warning:[/warning] Received empty or unexpected response content.")
+                     logger.warning(f"LLM test received empty response content: {response_data}")
             else:
-                 console.print("[warning]LLM Test Warning:[/warning] Received empty or unexpected response.")
-                 logger.warning(f"LLM test received unexpected response type or empty content: {response}")
+                 console.print("[warning]LLM Test Warning:[/warning] Received unexpected response format.")
+                 logger.warning(f"LLM test received unexpected response format: {response_data}")
 
         except ImportError as e:
              # This case should be caught earlier by LLM_CLIENTS_AVAILABLE, but handle defensively
@@ -573,6 +593,7 @@ class DayhoffService:
 
         # Check if client is already initialized and config hasn't changed significantly
         # (Simple check: just re-initialize if None for now)
+        # TODO: Add more robust check if config has changed (e.g., compare key config values)
         if self.llm_client is None:
             llm_config = self.config.get_llm_config()
             provider = llm_config.get('provider')
@@ -583,7 +604,12 @@ class DayhoffService:
             if not provider:
                 raise ValueError("LLM provider not configured. Set [LLM] provider.")
             if not api_key:
-                raise ValueError(f"API key for provider '{provider}' not found in config or environment variables.")
+                # Check if the provider is one that typically requires a key
+                if provider in config.LLM_API_KEY_ENV_VARS:
+                     env_var = config.LLM_API_KEY_ENV_VARS[provider]
+                     raise ValueError(f"API key for provider '{provider}' not found in config [LLM].api_key or environment variable {env_var}.")
+                else:
+                     logger.warning(f"API key for provider '{provider}' not found, but it might not be required.")
             if not model:
                 raise ValueError("LLM model not configured. Set [LLM] model.")
 
@@ -592,16 +618,28 @@ class DayhoffService:
             try:
                 # Instantiate the correct client based on provider
                 if provider == 'openai' or provider == 'openrouter':
-                    # Assuming OpenAIClient can handle OpenRouter via base_url and api_key
-                    # Pass relevant parameters; adjust based on actual OpenAIClient constructor
-                    self.llm_client = OpenAIClient(api_key=api_key, base_url=base_url, default_model=model)
+                    # Pass relevant parameters from llm_config
+                    self.llm_client = OpenAIClient(
+                        api_key=api_key,
+                        base_url=base_url,
+                        default_model=model
+                    )
                 elif provider == 'anthropic':
-                     # Pass relevant parameters; adjust based on actual AnthropicClient constructor
-                     self.llm_client = AnthropicClient(api_key=api_key, default_model=model) # Base URL might be implicit or configurable
+                     # Pass relevant parameters from llm_config
+                     # Note: AnthropicClient now also accepts base_url if needed
+                     self.llm_client = AnthropicClient(
+                         api_key=api_key,
+                         default_model=model,
+                         base_url=base_url # Pass base_url if provided/needed
+                     )
                 else:
                     # This case should be prevented by config validation, but handle defensively
                     raise ValueError(f"Unsupported LLM provider: {provider}")
                 logger.info(f"LLM client for {provider} initialized successfully.")
+            except TypeError as e:
+                 # Catch potential mismatches between arguments passed and client __init__ signature
+                 logger.error(f"Failed to initialize LLM client for {provider} due to TypeError: {e}", exc_info=True)
+                 raise RuntimeError(f"Failed to initialize LLM client for {provider}: {e}. Check client constructor arguments.") from e
             except Exception as e:
                  logger.error(f"Failed to initialize LLM client for {provider}: {e}", exc_info=True)
                  # Ensure client remains None on failure
