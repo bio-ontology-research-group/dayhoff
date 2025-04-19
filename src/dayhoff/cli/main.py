@@ -57,7 +57,9 @@ def setup_readline(service: DayhoffService):
         # 'text' is the part of the word being completed (e.g., 'he' in '/he')
         if line.startswith('/') and ' ' not in parts[0]:
             # Find commands in our list that start with the text being completed
-            options = [cmd for cmd in COMMANDS if cmd.startswith(text)]
+            # Match should be based on the part *after* the '/'
+            cmd_text = parts[0][1:] # Text after '/'
+            options = [cmd for cmd in COMMANDS if cmd.startswith(cmd_text)]
             if state < len(options):
                 # Return the full command name (without '/')
                 # Readline will append this to the '/' already typed, replacing 'text'
@@ -93,14 +95,28 @@ def repl():
 
     # --- Diagnostic Print ---
     # Print the commands loaded by this specific service instance and used for completion
-    print(f"[DEBUG] Commands available for completion: {COMMANDS}")
+    # logger.debug(f"Commands available for completion: {COMMANDS}") # Use logger instead of print
     # --- End Diagnostic Print ---
 
 
     while True:
         try:
+            # Get current status for the prompt
+            status = service.get_status()
+            if status['mode'] == 'connected':
+                # Shorten host if possible (e.g., remove domain)
+                short_host = status['host'].split('.')[0] if status['host'] else 'hpc'
+                prompt = f"dayhoff[{status['user']}@{short_host}:{status['cwd']}]> "
+            else:
+                # Show ~ for home directory if applicable
+                home_dir = os.path.expanduser("~")
+                display_cwd = status['cwd']
+                if display_cwd.startswith(home_dir):
+                    display_cwd = "~" + display_cwd[len(home_dir):]
+                prompt = f"dayhoff[local:{display_cwd}]> "
+
             # Use input() which now benefits from readline enhancements
-            line = input("dayhoff> ")
+            line = input(prompt)
             line = line.strip()
 
             if not line:
@@ -109,21 +125,34 @@ def repl():
                 break
 
             if not line.startswith('/'):
-                print("Error: Commands must start with '/' (e.g., /help).")
+                # Allow simple shell commands if not connected? Maybe not for now.
+                # print("Error: Commands must start with '/' (e.g., /help).")
+                # Treat non-slash commands as potential /hpc_run if connected, or error otherwise?
+                # For now, stick to requiring '/'
+                if status['mode'] == 'connected':
+                     print("Error: Commands must start with '/'. Did you mean '/hpc_run ...'?")
+                else:
+                     print("Error: Commands must start with '/' (e.g., /help, /ls, /cd).")
                 continue
 
             # Parse command and arguments
-            parts = shlex.split(line)
+            try:
+                parts = shlex.split(line)
+            except ValueError as e:
+                print(f"Error parsing command: {e}") # Handle unbalanced quotes etc.
+                continue
+
             command = parts[0][1:] # Remove leading '/'
             args = parts[1:]
 
             # Execute command via service
             result = service.execute_command(command, args)
-            if result: # Print result only if it's not empty/None
-                print(result)
+            # execute_command now handles printing its own output via console.print
+            # if result: # Print result only if it's not empty/None and not handled by handler
+            #     print(result)
 
         except KeyboardInterrupt:
-            print("\nInterrupted. Type /exit or Ctrl+D to quit.")
+            print("\nInterrupted. Type /exit or Ctrl+D to quit.") # Add newline for clarity
         except EOFError:
             print("\nExiting.")
             break
@@ -142,8 +171,9 @@ def execute(command, args):
     # Reconstruct args list if needed (Click might handle spaces okay)
     # For simplicity, assume args are passed correctly by Click
     result = service.execute_command(command, list(args))
-    if result:
-        print(result)
+    # execute_command handles printing via console, so don't print result here
+    # if result:
+    #     print(result)
 
 # Example of how other subcommands could be added
 # @cli.command()

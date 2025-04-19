@@ -1,6 +1,6 @@
 import json
 import shlex
-from typing import Any, List, Dict, Optional, Protocol # Added Protocol
+from typing import Any, List, Dict, Optional, Protocol, Tuple # Added Protocol, Tuple
 import logging # Added logging
 import os # Added os import
 import subprocess # Added for running test scripts
@@ -9,6 +9,7 @@ import textwrap # For formatting help text
 import shlex # For shell quoting
 import io # For capturing rich output
 import time # For LLM test timeout
+from pathlib import Path # For local path operations
 
 # --- Rich for coloring ---
 from rich.console import Console
@@ -139,8 +140,9 @@ class DayhoffService:
         self.file_inspector = FileInspector(self.local_fs)
         self.active_ssh_manager: Optional[SSHManager] = None
         self.remote_cwd: Optional[str] = None
+        self.local_cwd: str = os.getcwd() # Track local CWD
         self.llm_client: Optional[LLMClient] = None # Initialize LLM client as None
-        logger.info("DayhoffService initialized.")
+        logger.info(f"DayhoffService initialized. Local CWD: {self.local_cwd}")
         self._command_map = self._build_command_map()
 
 
@@ -194,8 +196,8 @@ class DayhoffService:
             "hpc_disconnect": {"handler": self._handle_hpc_disconnect, "help": "Close the persistent SSH connection to the HPC. Usage: /hpc_disconnect"},
             "hpc_run": {"handler": self._handle_hpc_run, "help": "Execute a command on the HPC using the active connection. Usage: /hpc_run <command_string>"},
             "hpc_slurm_run": {"handler": self._handle_hpc_slurm_run, "help": "Execute a command within a Slurm allocation (srun). Usage: /hpc_slurm_run <command_string>"},
-            "ls": {"handler": self._handle_ls, "help": "List files in the current remote directory with colors. Usage: /ls [ls_options_ignored]"},
-            "cd": {"handler": self._handle_cd, "help": "Change the current remote directory. Usage: /cd <remote_directory>"},
+            "ls": {"handler": self._handle_ls, "help": "List files in the current directory (local or remote) with colors. Usage: /ls [ls_options_ignored]"}, # Updated help
+            "cd": {"handler": self._handle_cd, "help": "Change the current directory (local or remote). Usage: /cd <directory>"}, # Updated help
             "hpc_slurm_submit": {"handler": self._handle_hpc_slurm_submit, "help": "Submit a Slurm job script. Usage: /hpc_slurm_submit <script_path> [options_json]"},
             "hpc_slurm_status": {
                 "handler": self._handle_hpc_slurm_status,
@@ -225,6 +227,23 @@ class DayhoffService:
         """Returns a list of available command names (without the leading '/')."""
         return list(self._command_map.keys())
 
+    def get_status(self) -> Dict[str, Any]:
+        """Returns the current connection status and context."""
+        if self.active_ssh_manager and self.active_ssh_manager.is_connected:
+            return {
+                "mode": "connected",
+                "host": self.active_ssh_manager.host,
+                "user": self.active_ssh_manager.username,
+                "cwd": self.remote_cwd or "~", # Provide default if None
+            }
+        else:
+            return {
+                "mode": "local",
+                "host": None,
+                "user": None,
+                "cwd": self.local_cwd,
+            }
+
     def execute_command(self, command: str, args: List[str]) -> Any:
         """Execute a command"""
         logger.info(f"Executing command: /{command} with args: {args}")
@@ -249,8 +268,16 @@ class DayhoffService:
                  console.print(f"[error]Argument Error:[/error] {e}")
                  return None # Indicate error
             except FileNotFoundError as e:
-                 logger.warning(f"File not found during /{command}: {e}")
-                 console.print(f"[error]Error:[/error] File not found - {e}")
+                 logger.warning(f"File/Directory not found during /{command}: {e}")
+                 console.print(f"[error]Error:[/error] File or directory not found - {e}")
+                 return None
+            except NotADirectoryError as e:
+                 logger.warning(f"Path is not a directory during /{command}: {e}")
+                 console.print(f"[error]Error:[/error] Path is not a directory - {e}")
+                 return None
+            except PermissionError as e:
+                 logger.warning(f"Permission denied during /{command}: {e}")
+                 console.print(f"[error]Error:[/error] Permission denied - {e}")
                  return None
             except ConnectionError as e:
                  logger.error(f"Connection error during /{command}: {e}", exc_info=False)
@@ -282,13 +309,22 @@ class DayhoffService:
         """Handles the /help command. Returns None as output is printed directly."""
         if not args:
             # General help
+            status = self.get_status()
             current_language = self.config.get_workflow_language()
             current_executor = self.config.get_workflow_executor(current_language) or "N/A"
             llm_provider = self.config.get('LLM', 'provider', 'N/A')
             llm_model = self.config.get('LLM', 'model', 'N/A')
 
+            # Build status line
+            if status['mode'] == 'connected':
+                status_line = f"Mode: [bold green]Connected[/] ({status['user']}@{status['host']}:{status['cwd']})"
+            else:
+                status_line = f"Mode: [bold yellow]Local[/] ({status['cwd']})"
+
+
             console.print(Panel(
                 f"[bold]Dayhoff REPL[/bold] - Type /<command> [arguments] to execute.\n"
+                f"{status_line}\n"
                 f"Workflow: {current_language.upper()} (Executor: {current_executor}) - Use /language, /config\n"
                 f"LLM: {llm_provider.upper()} (Model: {llm_model}) - Use /config\n"
                 f"Type /help <command> for details.",
@@ -300,8 +336,9 @@ class DayhoffService:
             # Group commands logically?
             cmd_groups = {
                 "General": ["help", "config", "language", "test"],
-                "Local FS": ["fs_head"], # Add more local FS commands if they exist
-                "HPC": ["hpc_connect", "hpc_disconnect", "hpc_run", "cd", "ls"],
+                "File System (Local/Remote)": ["ls", "cd", "fs_head"], # fs_head is local only
+                "HPC Connection": ["hpc_connect", "hpc_disconnect"],
+                "HPC Execution": ["hpc_run"],
                 "Slurm": ["hpc_slurm_run", "hpc_slurm_submit", "hpc_slurm_status"],
                 "Credentials": ["hpc_cred_get"],
                 "Workflow": ["wf_gen"],
@@ -819,17 +856,23 @@ class DayhoffService:
                 # For now, raise ArgumentError manually
                 raise argparse.ArgumentError(parser._get_action("num_lines"), "Number of lines must be positive.")
 
-            lines = list(self.file_inspector.head(parsed_args.file_path, parsed_args.num_lines))
-            abs_path = os.path.abspath(parsed_args.file_path)
+            # Resolve the file path relative to the *local* CWD
+            target_path = Path(self.local_cwd) / parsed_args.file_path
+            abs_path = target_path.resolve() # Get absolute path
+
+            # Check existence using resolved absolute path
+            if not abs_path.is_file():
+                 raise FileNotFoundError(f"File not found at '{abs_path}'")
+
+            # Use the absolute path with the file inspector
+            lines = list(self.file_inspector.head(str(abs_path), parsed_args.num_lines))
 
             if not lines:
-                if not self.local_fs.exists(parsed_args.file_path):
-                     raise FileNotFoundError(f"File not found at '{abs_path}'")
                 console.print(f"File is empty: {abs_path}", style="info")
                 return None
 
-            dirname = os.path.dirname(abs_path)
-            basename = os.path.basename(abs_path)
+            dirname = str(abs_path.parent)
+            basename = abs_path.name
             colored_basename = colorize_filename(basename, is_dir=False)
             header_text = Text.assemble(f"First {len(lines)} lines of '", dirname + os.path.sep, colored_basename, "':")
 
@@ -982,7 +1025,7 @@ class DayhoffService:
                      initial_cwd = "~"
 
                 self.active_ssh_manager = ssh_manager
-                self.remote_cwd = initial_cwd
+                self.remote_cwd = initial_cwd # Set remote CWD
                 console.print(f"Successfully connected to HPC host: {hostname} (user: {ssh_manager.username}, cwd: {self.remote_cwd}).", style="bold green")
                 return None
 
@@ -1021,14 +1064,14 @@ class DayhoffService:
                 host = getattr(self.active_ssh_manager, 'host', 'unknown')
                 self.active_ssh_manager.disconnect()
                 self.active_ssh_manager = None
-                self.remote_cwd = None
-                console.print(f"Successfully disconnected from HPC host: {host}.", style="info")
+                self.remote_cwd = None # Clear remote CWD
+                console.print(f"Successfully disconnected from HPC host: {host}. Operating in local mode.", style="info")
                 return None
             except Exception as e:
                 logger.error(f"Error during SSH disconnection: {e}", exc_info=True)
                 # Force clear state even if disconnect fails
                 self.active_ssh_manager = None
-                self.remote_cwd = None
+                self.remote_cwd = None # Clear remote CWD
                 raise RuntimeError(f"Error closing SSH connection: {e}") from e
 
         except argparse.ArgumentError as e:
@@ -1164,7 +1207,7 @@ class DayhoffService:
 
 
     def _handle_ls(self, args: List[str]) -> Optional[str]:
-        """Handles the /ls command by fetching file list/types and coloring locally. Prints output."""
+        """Handles the /ls command locally or remotely. Prints output."""
         parser = self._create_parser("ls", self._command_map['ls']['help'], add_help=True)
         # Allow unknown args for now, just ignore them
         parsed_args, unknown_args = parser.parse_known_args(args)
@@ -1172,52 +1215,81 @@ class DayhoffService:
              logger.warning(f"Ignoring unsupported arguments/options for /ls: {unknown_args}")
 
         try:
-            if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
-                raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
-            if self.remote_cwd is None:
-                 raise ConnectionError("Remote working directory unknown. Please use /hpc_connect again.")
+            status = self.get_status()
+            items = []
 
-            # Use find command to get type and name, handle potential errors
-            # %Y = item type (f=file, d=dir, l=link), %P = name relative to starting point (.)
-            find_cmd = f"find . -mindepth 1 -maxdepth 1 -printf '%Y %P\\n'"
-            full_command = f"cd {shlex.quote(self.remote_cwd)} && {find_cmd}"
+            if status['mode'] == 'connected':
+                # --- Remote LS ---
+                if not self.active_ssh_manager or not self.remote_cwd:
+                    # Should not happen if status['mode'] is 'connected', but check defensively
+                    raise ConnectionError("Internal state error: Connected mode but no SSH manager or remote CWD.")
 
-            try:
-                logger.info(f"Fetching file list for /ls with command: {full_command}")
-                output = self.active_ssh_manager.execute_command(full_command, timeout=30)
+                # Use find command to get type and name, handle potential errors
+                # %Y = item type (f=file, d=dir, l=link), %P = name relative to starting point (.)
+                find_cmd = f"find . -mindepth 1 -maxdepth 1 -printf '%Y %P\\n'"
+                full_command = f"cd {shlex.quote(self.remote_cwd)} && {find_cmd}"
 
-                items = []
-                if output:
-                    lines = output.strip().split('\n')
-                    for line in lines:
-                        if not line.strip(): continue
+                try:
+                    logger.info(f"Fetching remote file list for /ls with command: {full_command}")
+                    output = self.active_ssh_manager.execute_command(full_command, timeout=30)
+
+                    if output:
+                        lines = output.strip().split('\n')
+                        for line in lines:
+                            if not line.strip(): continue
+                            try:
+                                type_char, name = line.strip().split(' ', 1)
+                                is_dir = (type_char == 'd')
+                                # Could handle 'l' for links differently if needed
+                                items.append(colorize_filename(name, is_dir=is_dir))
+                            except ValueError:
+                                logger.warning(f"Could not parse line from remote find output: '{line}'")
+                                items.append(Text(line.strip(), style="error")) # Display unparseable lines in red
+
+                except (ConnectionError, TimeoutError, RuntimeError) as e:
+                    # Let outer handler deal with connection/timeout issues
+                    raise e
+                except Exception as e:
+                    logger.error(f"Unexpected error during remote /ls execution: {e}", exc_info=True)
+                    raise RuntimeError(f"Unexpected error listing remote directory: {e}") from e
+
+            else:
+                # --- Local LS ---
+                logger.info(f"Fetching local file list for /ls in directory: {self.local_cwd}")
+                try:
+                    for entry in sorted(os.listdir(self.local_cwd), key=str.lower):
                         try:
-                            type_char, name = line.strip().split(' ', 1)
-                            is_dir = (type_char == 'd')
-                            # Could handle 'l' for links differently if needed
-                            items.append(colorize_filename(name, is_dir=is_dir))
-                        except ValueError:
-                            logger.warning(f"Could not parse line from find output: '{line}'")
-                            # Display unparseable lines in red
-                            items.append(Text(line.strip(), style="error"))
+                            full_path = os.path.join(self.local_cwd, entry)
+                            is_dir = os.path.isdir(full_path)
+                            # Could add check for os.islink if needed
+                            items.append(colorize_filename(entry, is_dir=is_dir))
+                        except OSError as item_err: # Handle errors accessing specific items (e.g., permissions)
+                             logger.warning(f"Could not stat item '{entry}' in {self.local_cwd}: {item_err}")
+                             items.append(Text(f"{entry} (error)", style="error"))
+                except FileNotFoundError:
+                     # The CWD itself doesn't exist (e.g., deleted after start)
+                     raise FileNotFoundError(f"Local directory not found: {self.local_cwd}")
+                except PermissionError:
+                     raise PermissionError(f"Permission denied listing local directory: {self.local_cwd}")
+                except Exception as e:
+                     logger.error(f"Unexpected error during local /ls execution: {e}", exc_info=True)
+                     raise RuntimeError(f"Unexpected error listing local directory: {e}") from e
 
-                if not items:
-                    console.print(f"(Directory {self.remote_cwd} is empty)", style="info")
-                    return None
+            # --- Display Results (Common for Local/Remote) ---
+            current_dir_display = status['cwd']
+            if not items:
+                console.print(f"(Directory '{current_dir_display}' is empty)", style="info")
+                return None
 
-                # Sort by name (case-insensitive)
-                items.sort(key=lambda text: text.plain.lower())
-                # Display using Rich Columns
-                columns = Columns(items, expand=True, equal=True, column_first=True)
-                console.print(columns)
-                return None # Output printed
+            # Sort by name (case-insensitive) - already sorted for local, sort remote here
+            if status['mode'] == 'connected':
+                 items.sort(key=lambda text: text.plain.lower())
 
-            except (ConnectionError, TimeoutError, RuntimeError) as e:
-                # Let outer handler deal with connection/timeout issues
-                raise e
-            except Exception as e:
-                logger.error(f"Unexpected error during /ls execution: {e}", exc_info=True)
-                raise RuntimeError(f"Unexpected error listing remote directory: {e}") from e
+            # Display using Rich Columns
+            columns = Columns(items, expand=True, equal=True, column_first=True)
+            console.print(f"Contents of '{current_dir_display}':")
+            console.print(columns)
+            return None # Output printed
 
         except argparse.ArgumentError as e:
              raise e
@@ -1226,49 +1298,85 @@ class DayhoffService:
 
 
     def _handle_cd(self, args: List[str]) -> Optional[str]:
-        """Handles the /cd command by verifying the directory and updating remote_cwd. Prints output."""
+        """Handles the /cd command locally or remotely. Prints output."""
         parser = self._create_parser("cd", self._command_map['cd']['help'], add_help=True)
-        parser.add_argument("directory", help="The target remote directory")
+        parser.add_argument("directory", help="The target directory")
 
         try:
             parsed_args = parser.parse_args(args)
+            target_dir_arg = parsed_args.directory
+            status = self.get_status()
 
-            if not self.active_ssh_manager or not self.active_ssh_manager.is_connected:
-                raise ConnectionError("Not connected to HPC. Use /hpc_connect first.")
-            if self.remote_cwd is None:
-                 raise ConnectionError("Remote working directory unknown. Please use /hpc_connect again.")
+            if status['mode'] == 'connected':
+                # --- Remote CD ---
+                if not self.active_ssh_manager or self.remote_cwd is None:
+                    raise ConnectionError("Internal state error: Connected mode but no SSH manager or remote CWD.")
 
-            target_dir = parsed_args.directory
-            current_dir = self.remote_cwd
-            # Command to attempt cd and then print the new working directory's absolute path
-            test_command = f"cd {shlex.quote(current_dir)} && cd {shlex.quote(target_dir)} && pwd"
-            logger.info(f"Verifying remote directory change with command: {test_command}")
+                current_dir = self.remote_cwd
+                # Command to attempt cd and then print the new working directory's absolute path
+                test_command = f"cd {shlex.quote(current_dir)} && cd {shlex.quote(target_dir_arg)} && pwd"
+                logger.info(f"Verifying remote directory change with command: {test_command}")
 
-            try:
-                new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=30)
-                new_dir = new_dir_output.strip()
+                try:
+                    new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=30)
+                    new_dir = new_dir_output.strip()
 
-                # Basic validation: should be a non-empty string starting with '/'
-                if not new_dir or not new_dir.startswith("/"):
-                    logger.error(f"Failed to change directory to '{target_dir}'. 'pwd' command returned unexpected output: {new_dir_output}")
-                    # The error might be in the stderr from execute_command, but RuntimeError is raised
-                    # We rely on the RuntimeError raised by execute_command if cd fails
-                    raise RuntimeError(f"Failed to change directory to '{target_dir}'. Could not verify new path.")
+                    # Basic validation: should be a non-empty string starting with '/'
+                    if not new_dir or not new_dir.startswith("/"):
+                        logger.error(f"Failed to change remote directory to '{target_dir_arg}'. 'pwd' command returned unexpected output: {new_dir_output}")
+                        # Rely on RuntimeError raised by execute_command if cd fails
+                        raise RuntimeError(f"Failed to change remote directory to '{target_dir_arg}'. Could not verify new path.")
 
-                self.remote_cwd = new_dir
-                logger.info(f"Successfully changed remote working directory to: {self.remote_cwd}")
-                console.print(f"Remote working directory changed to: {self.remote_cwd}", style="info")
-                return None # Output printed
+                    self.remote_cwd = new_dir
+                    logger.info(f"Successfully changed remote working directory to: {self.remote_cwd}")
+                    console.print(f"Remote working directory changed to: {self.remote_cwd}", style="info")
+                    return None # Output printed
 
-            except (ConnectionError, TimeoutError) as e:
-                 raise e # Let outer handler deal with these
-            except RuntimeError as e:
-                 # Catch runtime errors from execute_command (e.g., cd failed)
-                 logger.error(f"Failed to change remote directory to '{target_dir}': {e}", exc_info=False)
-                 raise RuntimeError(f"Failed to change remote directory to '{target_dir}': {e}") from e
-            except Exception as e:
-                logger.error(f"Unexpected error changing remote directory to '{target_dir}': {e}", exc_info=True)
-                raise RuntimeError(f"Unexpected error changing remote directory: {e}") from e
+                except (ConnectionError, TimeoutError) as e:
+                     raise e # Let outer handler deal with these
+                except RuntimeError as e:
+                     # Catch runtime errors from execute_command (e.g., cd failed)
+                     logger.error(f"Failed to change remote directory to '{target_dir_arg}': {e}", exc_info=False)
+                     # Provide a clearer error message
+                     raise RuntimeError(f"Failed to change remote directory to '{target_dir_arg}'. Check path and permissions. Error: {e}") from e
+                except Exception as e:
+                    logger.error(f"Unexpected error changing remote directory to '{target_dir_arg}': {e}", exc_info=True)
+                    raise RuntimeError(f"Unexpected error changing remote directory: {e}") from e
+
+            else:
+                # --- Local CD ---
+                logger.info(f"Attempting to change local directory from '{self.local_cwd}' to '{target_dir_arg}'")
+                try:
+                    # Construct the target path relative to the current local CWD
+                    target_path = Path(self.local_cwd) / target_dir_arg
+                    # Resolve to an absolute path (handles '..', etc.)
+                    abs_path = target_path.resolve(strict=False) # strict=False allows resolving non-existent paths initially
+
+                    # Check if the resolved path exists and is a directory
+                    if not abs_path.exists():
+                         raise FileNotFoundError(f"Local directory not found: '{abs_path}'")
+                    if not abs_path.is_dir():
+                         raise NotADirectoryError(f"Local path is not a directory: '{abs_path}'")
+
+                    # Check permissions (basic check, might not catch all edge cases)
+                    if not os.access(str(abs_path), os.R_OK | os.X_OK):
+                         raise PermissionError(f"Permission denied accessing local directory: '{abs_path}'")
+
+                    # Update local CWD
+                    self.local_cwd = str(abs_path)
+                    logger.info(f"Successfully changed local working directory to: {self.local_cwd}")
+                    console.print(f"Local working directory changed to: {self.local_cwd}", style="info")
+                    return None # Output printed
+
+                except FileNotFoundError as e:
+                     raise e # Re-raise for execute_command
+                except NotADirectoryError as e:
+                     raise e # Re-raise
+                except PermissionError as e:
+                     raise e # Re-raise
+                except Exception as e:
+                    logger.error(f"Unexpected error changing local directory to '{target_dir_arg}': {e}", exc_info=True)
+                    raise RuntimeError(f"Unexpected error changing local directory: {e}") from e
 
         except argparse.ArgumentError as e:
              raise e
@@ -1290,7 +1398,10 @@ class DayhoffService:
             if not isinstance(options, dict):
                 raise ValueError("Options JSON must decode to a dictionary.")
 
-            script_path = os.path.abspath(parsed_args.script_path)
+            # Resolve script path relative to local CWD
+            script_path_obj = (Path(self.local_cwd) / parsed_args.script_path).resolve()
+            script_path = str(script_path_obj)
+
             if not os.path.isfile(script_path):
                  raise FileNotFoundError(f"Script file not found at '{script_path}'")
 
@@ -1489,7 +1600,17 @@ class DayhoffService:
             # Assuming WorkflowGenerator exists and has a method like generate_workflow
             generator = WorkflowGenerator()
             # Pass language to the generator method
-            workflow_output = generator.generate_workflow(steps, language=language)
+            # TODO: Update WorkflowGenerator.generate_workflow signature if needed
+            # For now, assume it takes steps and language
+            # workflow_output = generator.generate_workflow(steps, language=language)
+            # Placeholder until generate_workflow exists
+            if language == 'cwl':
+                 workflow_output = generator.generate_cwl(steps) # Assuming this exists
+            elif language == 'nextflow':
+                 workflow_output = generator.generate_nextflow(steps) # Assuming this exists
+            else:
+                 raise NotImplementedError(f"Workflow generation for language '{language}' is not implemented in WorkflowGenerator.")
+
 
             if workflow_output is None or not workflow_output.strip():
                 console.print(f"Workflow generation for language '{language}' returned no output.", style="warning")
