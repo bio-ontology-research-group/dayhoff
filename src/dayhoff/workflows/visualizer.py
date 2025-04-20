@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 import re
+import json # Added import
 
 # Attempt to import graphviz
 try:
