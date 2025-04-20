@@ -4,6 +4,9 @@ paramiko>=2.7.0
 keyring>=23.0
 biopython>=1.78
 rich # Added for colored terminal output
+openai>=1.0.0 # For LLM workflow generation
+anthropic>=0.5.0 # For Claude LLM support
+jinja2>=3.0.0 # For prompt templates
 
 # Optional Dependencies (install with pip install -r requirements.txt -r requirements-extra.txt or similar)
 # Consider splitting extras into separate files (e.g., requirements-ai.txt) if preferred
