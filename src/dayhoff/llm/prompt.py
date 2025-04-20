@@ -36,7 +36,7 @@ class PromptManager:
 
             Description: {{description}}
 
-            The workflow script should:
+            The workflow script MUST:
             1. Be syntactically correct and runnable for the {{language}} language.
             2. Follow best practices for {{language}} development (e.g., modularity, clear inputs/outputs).
             3. Include comments explaining key steps or complex logic.
@@ -44,16 +44,22 @@ class PromptManager:
             5. Define necessary inputs and outputs clearly.
             6. Include basic error handling or reporting if feasible within the language structure.
 
-            Also provide a brief, descriptive name and a one or two-sentence summary for this workflow.
+            You MUST also provide a brief, descriptive name and a one or two-sentence summary for this workflow.
 
-            Respond ONLY with a valid JSON object containing the following keys:
+            Respond ONLY with a single, valid JSON object. Do NOT include any text outside the JSON structure.
+            The JSON object MUST contain the following keys:
+            - "workflow_name": A short, descriptive name for the workflow (e.g., 'RNASeq_Alignment_Quantification'). This key is REQUIRED.
+            - "workflow_summary": A brief summary of what the workflow does (1-2 sentences). This key is REQUIRED.
+            - "workflow_code": The complete, runnable workflow script code as a single string in {{language}} format. This key is REQUIRED.
+
+            Example JSON structure:
             {
-                "workflow_name": "A short, descriptive name for the workflow (e.g., 'RNASeq_Alignment_Quantification')",
-                "workflow_summary": "A brief summary of what the workflow does (1-2 sentences)",
-                "workflow_code": "The complete, runnable workflow script code as a single string in {{language}} format"
+                "workflow_name": "ExampleWorkflowName",
+                "workflow_summary": "This workflow does X and Y.",
+                "workflow_code": "..."
             }
 
-            Ensure the "workflow_code" value is a single string containing the entire script, properly escaped for JSON if necessary. Do not include any text outside the JSON structure.
+            Ensure the "workflow_code" value is a single string containing the entire script, properly escaped for JSON.
             """),
             'workflow_correction': Template("""
             You are an expert bioinformatics workflow developer. The following {{language}} workflow script has validation errors.
@@ -68,13 +74,18 @@ class PromptManager:
 
             Please correct the workflow script to fix ONLY the reported errors. Maintain the original functionality and structure as much as possible. Ensure the corrected script is syntactically valid {{language}}.
 
-            Respond ONLY with a valid JSON object containing the following keys:
+            Respond ONLY with a single, valid JSON object. Do NOT include any text outside the JSON structure.
+            The JSON object MUST contain the following keys:
+            - "corrected_workflow": The complete, corrected workflow script code as a single string in {{language}} format. This key is REQUIRED.
+            - "explanation": Brief explanation of the specific changes made to fix the reported errors. This key is REQUIRED.
+
+            Example JSON structure:
             {
-                "corrected_workflow": "The complete, corrected workflow script code as a single string in {{language}} format",
-                "explanation": "Brief explanation of the specific changes made to fix the reported errors"
+                "corrected_workflow": "...",
+                "explanation": "Fixed issue X by doing Y."
             }
 
-            Ensure the "corrected_workflow" value is a single string containing the entire corrected script, properly escaped for JSON if necessary. Do not include any text outside the JSON structure.
+            Ensure the "corrected_workflow" value is a single string containing the entire corrected script, properly escaped for JSON.
             """)
         }
         # Add more templates as needed (e.g., for specific analysis suggestions, code explanation)
