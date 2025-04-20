@@ -70,6 +70,10 @@ except ImportError:
     class LLMWorkflowGenerator:
         def generate_workflow(self, description: str, max_attempts: int = 3) -> Dict[str, Any]: ...
         def list_workflows(self) -> List[Dict[str, Any]]: ...
+        # Add placeholders for new methods
+        def delete_workflow(self, index: int) -> Dict[str, Any]: ...
+        def get_workflow_inputs(self, index: int) -> Dict[str, Any]: ...
+
     
     # Log warning only once during initialization
     logging.getLogger(__name__).warning("LLM client libraries not found or import failed. LLM features will be unavailable.")
@@ -283,6 +287,8 @@ class DayhoffService:
                       list          : List all saved workflows.
                       show <index>  : Show details of a specific workflow.
                       generate <description> : Generate a new workflow using LLM.
+                      delete <index> : Delete a specific workflow.
+                      inputs <index> : List the required inputs for a specific workflow.
                     
                     Note: You can also generate workflows by typing a description without a leading '/'.""")
             },
@@ -368,7 +374,7 @@ class DayhoffService:
                  logger.warning(f"Validation error during /{command}: {e}")
                  console.print(f"[error]Validation Error:[/error] {e}")
                  return None
-            except IndexError as e: # Catch index errors specifically (e.g., for /queue remove)
+            except IndexError as e: # Catch index errors specifically (e.g., for /queue remove, /workflow delete/show/inputs)
                  logger.warning(f"Index error during /{command}: {e}")
                  console.print(f"[error]Index Error:[/error] {e}")
                  return None
@@ -2289,6 +2295,15 @@ class DayhoffService:
         # --- Subparser: generate ---
         parser_generate = subparsers.add_parser("generate", help="Generate a new workflow using LLM.", add_help=True)
         parser_generate.add_argument("description", nargs='+', help="Description of the workflow to generate.")
+
+        # --- Subparser: delete ---
+        parser_delete = subparsers.add_parser("delete", help="Delete a specific workflow.", add_help=True)
+        parser_delete.add_argument("index", type=int, help="Index of the workflow to delete (from list).")
+
+        # --- Subparser: inputs ---
+        parser_inputs = subparsers.add_parser("inputs", help="List required inputs for a specific workflow.", add_help=True)
+        parser_inputs.add_argument("index", type=int, help="Index of the workflow to inspect (from list).")
+
         
         try:
             # Handle case where no subcommand is given - default to list
@@ -2305,6 +2320,10 @@ class DayhoffService:
             elif parsed_args.subcommand == "generate":
                 description = " ".join(parsed_args.description)
                 return self._handle_workflow_generation(description)
+            elif parsed_args.subcommand == "delete":
+                return self._handle_workflow_delete(parsed_args.index)
+            elif parsed_args.subcommand == "inputs":
+                return self._handle_workflow_inputs(parsed_args.index)
             else:
                 # Should not happen if subcommand is required/checked, but handle defensively
                 parser.print_help()
@@ -2354,6 +2373,8 @@ class DayhoffService:
                 
             console.print(table)
             console.print("\nUse '/workflow show <#>' to view details of a specific workflow.", style="dim")
+            console.print("Use '/workflow delete <#>' to remove a workflow.", style="dim")
+            console.print("Use '/workflow inputs <#>' to list required inputs.", style="dim")
             return None
             
         except Exception as e:
@@ -2407,7 +2428,15 @@ class DayhoffService:
                         workflow_code = f.read()
                     
                     language = workflow.get('language', 'unknown')
-                    console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code", border_style="green"))
+                    # Use Rich Markdown for syntax highlighting if language is known
+                    # Note: Requires 'pygments' library
+                    try:
+                        md = Markdown(f"```{language}\n{workflow_code}\n```", code_theme="default")
+                        console.print(Panel(md, title=f"{language.upper()} Workflow Code", border_style="green"))
+                    except Exception: # Fallback if markdown fails
+                         logger.warning("Failed to render workflow code as markdown, showing plain text.")
+                         console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code (Plain Text)", border_style="green"))
+
                 except Exception as e:
                     console.print(f"[error]Error reading workflow file:[/error] {e}")
             else:
@@ -2477,7 +2506,14 @@ class DayhoffService:
                     with open(file_path, 'r') as f:
                         workflow_code = f.read()
                     
-                    console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code", border_style="cyan"))
+                    # Use Rich Markdown for syntax highlighting
+                    try:
+                        md = Markdown(f"```{language}\n{workflow_code}\n```", code_theme="default")
+                        console.print(Panel(md, title=f"{language.upper()} Workflow Code", border_style="cyan"))
+                    except Exception:
+                         logger.warning("Failed to render workflow code as markdown, showing plain text.")
+                         console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code (Plain Text)", border_style="cyan"))
+
                 except Exception as e:
                     console.print(f"[error]Error reading generated workflow file:[/error] {e}")
             
@@ -2488,4 +2524,85 @@ class DayhoffService:
             logger.error(f"Error generating workflow: {e}", exc_info=True)
             # Raise runtime error so the REPL can catch and display it
             raise RuntimeError(f"Error generating workflow: {e}") from e
+
+    def _handle_workflow_delete(self, index: int) -> None:
+        """Deletes a specific workflow. Prints output."""
+        try:
+            workflow_generator = self._get_workflow_generator()
+            result = workflow_generator.delete_workflow(index) # Call backend method
+
+            if result.get('success', False):
+                workflow_name = result.get('name', 'Unknown')
+                console.print(f"[bold green]✅ Workflow #{index} ('{workflow_name}') deleted successfully.[/bold green]")
+                if 'warning' in result: # Show warning if file deletion failed but index was updated
+                     console.print(f"[warning]Warning:[/warning] {result['warning']}")
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                # Raise specific errors if possible (IndexError, FileNotFoundError)
+                if "index" in error_msg.lower() and "out of range" in error_msg.lower():
+                     raise IndexError(error_msg)
+                elif "file not found" in error_msg.lower():
+                     raise FileNotFoundError(error_msg)
+                else:
+                     console.print(f"[error]Failed to delete workflow #{index}:[/error] {error_msg}")
+
+            return None
+
+        except IndexError as e:
+            raise e # Re-raise for execute_command to handle
+        except FileNotFoundError as e:
+             raise e # Re-raise
+        except Exception as e:
+            logger.error(f"Error deleting workflow #{index}: {e}", exc_info=True)
+            raise RuntimeError(f"Error deleting workflow: {e}") from e
+
+    def _handle_workflow_inputs(self, index: int) -> None:
+        """Lists required inputs for a specific workflow. Prints output."""
+        try:
+            workflow_generator = self._get_workflow_generator()
+            result = workflow_generator.get_workflow_inputs(index) # Call backend method
+
+            if result.get('success', False):
+                inputs = result.get('inputs', [])
+                workflow_name = result.get('name', 'Unknown')
+                language = result.get('language', 'unknown')
+
+                if not inputs:
+                    console.print(f"Workflow #{index} ('{workflow_name}') in {language.upper()} appears to have no defined inputs (or parsing failed).", style="info")
+                    return None
+
+                table = Table(title=f"Required Inputs for Workflow #{index} ('{workflow_name}') - {language.upper()}", show_header=True, header_style="bold magenta")
+                table.add_column("Input Name", style="bold cyan")
+                table.add_column("Type", style="yellow")
+                table.add_column("Description / Notes", style="dim")
+
+                for wf_input in inputs:
+                    table.add_row(
+                        wf_input.get('name', 'N/A'),
+                        wf_input.get('type', 'unknown'),
+                        wf_input.get('description', '')
+                    )
+                console.print(table)
+
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                # Raise specific errors if possible
+                if "index" in error_msg.lower() and "out of range" in error_msg.lower():
+                     raise IndexError(error_msg)
+                elif "file not found" in error_msg.lower():
+                     raise FileNotFoundError(error_msg)
+                elif "parsing failed" in error_msg.lower() or "not implemented" in error_msg.lower():
+                     console.print(f"[warning]Could not parse inputs for workflow #{index}:[/warning] {error_msg}")
+                else:
+                     console.print(f"[error]Failed to get inputs for workflow #{index}:[/error] {error_msg}")
+
+            return None
+
+        except IndexError as e:
+            raise e # Re-raise for execute_command
+        except FileNotFoundError as e:
+             raise e # Re-raise
+        except Exception as e:
+            logger.error(f"Error getting inputs for workflow #{index}: {e}", exc_info=True)
+            raise RuntimeError(f"Error getting workflow inputs: {e}") from e
 
