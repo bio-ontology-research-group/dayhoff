@@ -36,7 +36,7 @@ class WorkflowVisualizer:
         Args:
             workflow_code: The string content of the workflow file.
             language: The workflow language (e.g., 'cwl', 'nextflow').
-            output_path: The Path object where the DOT file should be saved.
+            output_path: The Path object where the DOT file should be saved (e.g., 'workflow.gv').
 
         Returns:
             Dictionary with 'success': bool and 'path': str or 'error': str.
@@ -59,13 +59,16 @@ class WorkflowVisualizer:
             if dot:
                 # Ensure output directory exists
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                # Use format='gv' to explicitly save as DOT source
-                # The render method saves a file named output_path.gv
-                dot.render(outfile=str(output_path), format='gv', view=False, cleanup=True)
-                # The actual saved file has .gv extension, let's return that path
-                dot_file_path = output_path.with_suffix('.gv')
-                logger.info(f"Successfully generated DOT file: {dot_file_path}")
-                return {'success': True, 'path': str(dot_file_path)}
+
+                # Get the DOT source code directly
+                dot_source = dot.source
+
+                # Write the DOT source to the specified output file
+                with open(output_path, 'w') as f:
+                    f.write(dot_source)
+
+                logger.info(f"Successfully generated DOT file: {output_path}")
+                return {'success': True, 'path': str(output_path)}
             else:
                 # This case might occur if parsing succeeded but graph generation failed internally
                 error_msg = f"Graph generation failed for language '{language}' for unknown reasons."
