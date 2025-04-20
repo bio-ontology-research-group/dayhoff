@@ -4,6 +4,7 @@ import argparse
 import os
 import datetime
 from typing import List, Optional, TYPE_CHECKING
+from pathlib import Path # Added
 
 from rich.panel import Panel
 from rich.table import Table
@@ -13,6 +14,7 @@ from rich.markdown import Markdown
 
 from ..config import ALLOWED_WORKFLOW_LANGUAGES # Import allowed languages
 from ..workflow_generator import WorkflowGenerator # For wf_gen
+from ..workflows.visualizer import WorkflowVisualizer # Import the new visualizer
 
 if TYPE_CHECKING:
     from ..service import DayhoffService # Import DayhoffService for type hinting
@@ -150,6 +152,9 @@ def handle_workflow(service: 'DayhoffService', args: List[str]) -> Optional[str]
     parser_inputs = subparsers.add_parser("inputs", help="List required inputs for a specific workflow.", add_help=True)
     parser_inputs.add_argument("index", type=int, help="Index of the workflow to inspect (from list).")
 
+    # --- Subparser: visualize ---
+    parser_visualize = subparsers.add_parser("visualize", help="Generate a DOT file visualizing the workflow structure.", add_help=True)
+    parser_visualize.add_argument("index", type=int, help="Index of the workflow to visualize (from list).")
     
     try:
         # Handle case where no subcommand is given - default to list
@@ -170,6 +175,8 @@ def handle_workflow(service: 'DayhoffService', args: List[str]) -> Optional[str]
             return _handle_workflow_delete(service, parsed_args.index)
         elif parsed_args.subcommand == "inputs":
             return _handle_workflow_inputs(service, parsed_args.index)
+        elif parsed_args.subcommand == "visualize":
+            return _handle_workflow_visualize(service, parsed_args.index)
         else:
             # Should not happen if subcommand is required/checked, but handle defensively
             parser.print_help()
@@ -221,6 +228,7 @@ def _handle_workflow_list(service: 'DayhoffService') -> None:
         service.console.print("\nUse '/workflow show <#>' to view details of a specific workflow.", style="dim")
         service.console.print("Use '/workflow delete <#>' to remove a workflow.", style="dim")
         service.console.print("Use '/workflow inputs <#>' to list required inputs.", style="dim")
+        service.console.print("Use '/workflow visualize <#>' to generate a DOT graph file.", style="dim") # Added help text
         return None
         
     except Exception as e:
@@ -231,18 +239,17 @@ def _handle_workflow_show(service: 'DayhoffService', index: int) -> None:
     """Shows details of a specific workflow. Prints output."""
     try:
         workflow_generator = service._get_workflow_generator()
-        workflows = workflow_generator.list_workflows()
-        
-        if not workflows:
-            service.console.print("No workflows have been generated yet.", style="info")
-            return None
-            
-        # Convert from 1-based (user) to 0-based (internal) index
-        idx = index - 1
-        if idx < 0 or idx >= len(workflows):
-            raise IndexError(f"Workflow index {index} is out of range. Valid range: 1-{len(workflows)}")
-            
-        workflow = workflows[idx]
+        # Use get_workflow_details which handles index validation
+        details_result = workflow_generator.get_workflow_details(index)
+        if not details_result['success']:
+             error_msg = details_result.get('error', 'Unknown error')
+             if "index" in error_msg.lower() and "out of range" in error_msg.lower():
+                 raise IndexError(error_msg)
+             else:
+                 service.console.print(f"[error]Failed to get workflow details:[/error] {error_msg}")
+                 return None
+
+        workflow = details_result['workflow']
         
         # Format created date
         created_at = workflow.get('created_at', '')
@@ -451,3 +458,69 @@ def _handle_workflow_inputs(service: 'DayhoffService', index: int) -> None:
     except Exception as e:
         logger.error(f"Error getting inputs for workflow #{index}: {e}", exc_info=True)
         raise RuntimeError(f"Error getting workflow inputs: {e}") from e
+
+def _handle_workflow_visualize(service: 'DayhoffService', index: int) -> None:
+    """Generates a DOT file visualizing a specific workflow. Prints output."""
+    try:
+        workflow_generator = service._get_workflow_generator()
+        details_result = workflow_generator.get_workflow_details(index)
+
+        if not details_result['success']:
+            error_msg = details_result.get('error', 'Unknown error')
+            if "index" in error_msg.lower() and "out of range" in error_msg.lower():
+                 raise IndexError(error_msg)
+            else:
+                 service.console.print(f"[error]Failed to get workflow details:[/error] {error_msg}")
+                 return None
+
+        workflow = details_result['workflow']
+        file_path_str = workflow.get('file')
+        language = workflow.get('language', 'unknown')
+        workflow_name = workflow.get('name', 'Untitled')
+
+        if not file_path_str:
+            raise FileNotFoundError(f"No file path found for workflow index #{index}.")
+
+        file_path = Path(file_path_str)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Workflow file not found at {file_path_str}")
+
+        try:
+            with open(file_path, 'r') as f:
+                workflow_code = f.read()
+        except Exception as e:
+            service.console.print(f"[error]Failed to read workflow file {file_path}: {e}[/error]")
+            return None
+
+        service.console.print(f"Generating visualization for workflow #{index} ('{workflow_name}') - {language.upper()}...", style="info")
+
+        try:
+            visualizer = WorkflowVisualizer()
+        except ImportError as e:
+             service.console.print(f"[error]Visualization failed: {e}[/error]")
+             service.console.print("Please ensure 'graphviz' Python library and system tools are installed.")
+             return None
+
+        # Define output path (e.g., same directory, with .gv extension)
+        dot_output_path = file_path.with_suffix('.gv')
+
+        viz_result = visualizer.generate_dot(workflow_code, language, dot_output_path)
+
+        if viz_result.get('success'):
+            saved_path = viz_result.get('path')
+            service.console.print(f"[bold green]✅ Workflow visualization DOT file generated successfully:[/bold green]")
+            service.console.print(f"   {saved_path}")
+            service.console.print(f"You can render this using Graphviz, e.g.: [cyan]dot -Tsvg {saved_path} -o {dot_output_path.with_suffix('.svg')}[/cyan]")
+        else:
+            error_msg = viz_result.get('error', 'Unknown visualization error')
+            service.console.print(f"[error]Failed to generate visualization:[/error] {error_msg}")
+
+        return None
+
+    except IndexError as e:
+        raise e # Re-raise for execute_command
+    except FileNotFoundError as e:
+         raise e # Re-raise
+    except Exception as e:
+        logger.error(f"Error visualizing workflow #{index}: {e}", exc_info=True)
+        raise RuntimeError(f"Error visualizing workflow: {e}") from e

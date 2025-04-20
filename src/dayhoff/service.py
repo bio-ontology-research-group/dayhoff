@@ -48,6 +48,7 @@ except ImportError:
         def generate_workflow(self, description: str, max_attempts: int = 3) -> Dict[str, Any]: ...
         def list_workflows(self) -> List[Dict[str, Any]]: ...
         def delete_workflow(self, index: int) -> Dict[str, Any]: ...
+        def get_workflow_details(self, index: int) -> Dict[str, Any]: ... # Added for visualize
         def get_workflow_inputs(self, index: int) -> Dict[str, Any]: ...
     logging.getLogger(__name__).warning("LLM client libraries not found or import failed. LLM features will be unavailable.")
 
@@ -219,6 +220,7 @@ class DayhoffService:
                       generate <description> : Generate a new workflow using LLM.
                       delete <index> : Delete a specific workflow.
                       inputs <index> : List the required inputs for a specific workflow.
+                      visualize <index> : Generate a DOT file visualizing the workflow structure.
                     
                     Note: You can also generate workflows by typing a description without a leading '/'.""")
             },
@@ -312,6 +314,10 @@ class DayhoffService:
             except NotImplementedError as e:
                  logger.warning(f"Feature not implemented for /{command}: {e}")
                  self.console.print(f"[warning]Not Implemented:[/warning] {e}")
+                 return None
+            except ImportError as e: # Catch missing optional dependencies like graphviz
+                 logger.error(f"Missing dependency for command /{command}: {e}", exc_info=False)
+                 self.console.print(f"[error]Missing Dependency:[/error] {e}")
                  return None
             except Exception as e:
                 logger.error(f"Error executing command /{command}: {e}", exc_info=True)

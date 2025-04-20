@@ -386,6 +386,24 @@ class LLMWorkflowGenerator:
 
         return {'success': True, 'name': workflow_name}
 
+    def get_workflow_details(self, index: int) -> Dict[str, Any]:
+        """
+        Get the details (metadata) for a workflow by its 1-based index.
+
+        Args:
+            index: 1-based index of the workflow.
+
+        Returns:
+            Dictionary with 'success': bool and 'workflow': dict or 'error': str.
+        """
+        idx = index - 1 # Convert to 0-based index
+        if idx < 0 or idx >= len(self.workflows_index):
+            return {'success': False, 'error': f"Workflow index {index} is out of range. Valid range: 1-{len(self.workflows_index)}"}
+
+        workflow_entry = self.workflows_index[idx]
+        return {'success': True, 'workflow': workflow_entry}
+
+
     def get_workflow_inputs(self, index: int) -> Dict[str, Any]:
         """
         Get the defined inputs for a workflow by its 1-based index.
@@ -396,11 +414,11 @@ class LLMWorkflowGenerator:
         Returns:
             Dictionary with 'success': bool, 'inputs': list, 'name': str, 'language': str or 'error': str.
         """
-        idx = index - 1 # Convert to 0-based index
-        if idx < 0 or idx >= len(self.workflows_index):
-            return {'success': False, 'error': f"Workflow index {index} is out of range. Valid range: 1-{len(self.workflows_index)}"}
+        details_result = self.get_workflow_details(index)
+        if not details_result['success']:
+            return details_result # Return the error from get_workflow_details
 
-        workflow_entry = self.workflows_index[idx]
+        workflow_entry = details_result['workflow']
         file_path_str = workflow_entry.get('file')
         workflow_name = workflow_entry.get('name', 'Unknown')
         language = workflow_entry.get('language', 'unknown').lower()
