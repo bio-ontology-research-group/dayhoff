@@ -4,6 +4,7 @@ paramiko>=2.7.0
 keyring>=23.0
 biopython>=1.78
 rich # Added for colored terminal output
+graphviz # Added for workflow visualization
 openai>=1.0.0 # For LLM workflow generation
 anthropic>=0.5.0 # For Claude LLM support
 jinja2>=3.0.0 # For prompt templates
@@ -18,6 +19,7 @@ jinja2>=3.0.0 # For prompt templates
 # --- Workflows ---
 # cwlgen
 # pynextflow
+# ruamel.yaml # Needed for CWL parsing in visualizer
 
 # --- Development ---
 # pytest
