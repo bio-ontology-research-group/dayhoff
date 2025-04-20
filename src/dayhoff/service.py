@@ -323,8 +323,7 @@ class DayhoffService:
             return self._handle_workflow_generation(command + ' ' + ' '.join(args))
             
         # Strip leading / if present
-        if command.startswith('/'):
-            command = command[1:]
+        command = command[1:]
             
         logger.info(f"Executing command: /{command} with args: {args}")
         if command in self._command_map:
