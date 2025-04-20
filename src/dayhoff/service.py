@@ -317,13 +317,13 @@ class DayhoffService:
 
     def execute_command(self, command: str, args: List[str]) -> Any:
         """Execute a command"""
-        # Check if this is a non-command input (no leading /)
-        if not command.startswith('/'):
-            # Treat as workflow generation request
+        # Check if this is a command (starts with /)
+        if command.startswith('/'):
+            # Strip leading / for command processing
+            command = command[1:]
+        else:
+            # Non-command input - treat as workflow generation request
             return self._handle_workflow_generation(command + ' ' + ' '.join(args))
-            
-        # Strip leading / if present
-        command = command[1:]
             
         logger.info(f"Executing command: /{command} with args: {args}")
         if command in self._command_map:
