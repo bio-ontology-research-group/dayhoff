@@ -1057,16 +1057,19 @@ class DayhoffService:
                 raise ConnectionError("Cannot check remote path type: Not connected.")
             try:
                 # Use test -d and test -f
-                if self.active_ssh_manager.execute_command(f"test -d {shlex.quote(abs_path)}", check_exit_code=True, timeout=10):
-                    return 'directory'
-                elif self.active_ssh_manager.execute_command(f"test -f {shlex.quote(abs_path)}", check_exit_code=True, timeout=10):
-                     return 'file'
-                else:
-                    # Should have been caught by resolve, but double-check
-                    raise FileNotFoundError(f"Remote path exists but is not a file or directory: {abs_path}")
-            except RuntimeError as e:
-                 # Command failed, likely doesn't exist or permission error
-                 raise FileNotFoundError(f"Error checking type of remote path '{abs_path}': {e}") from e
+                # Try checking for directory first
+                self.active_ssh_manager.execute_command(f"test -d {shlex.quote(abs_path)}", timeout=10)
+                return 'directory'
+            except RuntimeError:
+                 # If test -d fails, try test -f
+                try:
+                    self.active_ssh_manager.execute_command(f"test -f {shlex.quote(abs_path)}", timeout=10)
+                    return 'file'
+                except RuntimeError as e:
+                     # If test -f also fails, the path likely doesn't exist, isn't a file/dir, or lacks permissions
+                     raise FileNotFoundError(f"Error checking type or path not found for remote '{abs_path}': {e}") from e
+                 except (ConnectionError, TimeoutError) as e:
+                      raise ConnectionError(f"Connection error checking type of remote path '{abs_path}': {e}") from e
             except (ConnectionError, TimeoutError) as e:
                  raise ConnectionError(f"Connection error checking type of remote path '{abs_path}': {e}") from e
         else:
@@ -1353,8 +1356,8 @@ class DayhoffService:
                 timeout = 300 # 5 min timeout
 
             try:
-                # Use execute_command with check_exit_code=True to raise RuntimeError on failure
-                output = self.active_ssh_manager.execute_command(command_to_run, timeout=timeout, check_exit_code=True)
+                # Execute command - relies on execute_command raising RuntimeError on failure
+                output = self.active_ssh_manager.execute_command(command_to_run, timeout=timeout)
                 # Print the raw output
                 if output:
                      console.print(output)
@@ -1414,8 +1417,8 @@ class DayhoffService:
 
             try:
                 logger.info(f"Executing command explicitly via srun using active SSH connection: {full_command}")
-                # Use check_exit_code=True
-                output = self.active_ssh_manager.execute_command(full_command, timeout=timeout, check_exit_code=True)
+                # Relies on execute_command raising RuntimeError on failure
+                output = self.active_ssh_manager.execute_command(full_command, timeout=timeout)
                 if output:
                      console.print(output)
                 else:
@@ -1473,7 +1476,7 @@ class DayhoffService:
 
                 try:
                     logger.info(f"Fetching remote file list for /ls with command: {full_command}")
-                    output = self.active_ssh_manager.execute_command(full_command, timeout=30, check_exit_code=True)
+                    output = self.active_ssh_manager.execute_command(full_command, timeout=30)
 
                     if output:
                         # Split by null character, pairs of type and name
@@ -1565,11 +1568,11 @@ class DayhoffService:
                 logger.info(f"Attempting remote directory change to: {target_dir_arg}")
 
                 try:
-                    # 1. Verify it's a directory first
-                    self.active_ssh_manager.execute_command(check_dir_cmd, timeout=15, check_exit_code=True)
+                    # 1. Verify it's a directory first (execute_command will raise RuntimeError if test -d fails)
+                    self.active_ssh_manager.execute_command(check_dir_cmd, timeout=15)
 
-                    # 2. If directory check passes, get the new absolute path
-                    new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=15, check_exit_code=True)
+                    # 2. If directory check passes, get the new absolute path (execute_command raises RuntimeError if cd or pwd fails)
+                    new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=15)
                     new_dir = new_dir_output.strip()
 
                     # Basic validation: should be a non-empty string starting with '/'
@@ -2199,5 +2202,4 @@ class DayhoffService:
              logger.info(f"Cleared {queue_size_before} items from the file queue.")
              console.print(f"Cleared {queue_size_before} items from the file queue.", style="info")
         return None # Output printed
-
 
