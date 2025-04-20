@@ -10,9 +10,12 @@ import re # Added for cleaning response
 # Attempt to import ruamel.yaml for CWL parsing
 try:
     from ruamel.yaml import YAML
+    # Import the specific error for duplicate keys
+    from ruamel.yaml.constructor import DuplicateKeyError
     RUAMEL_AVAILABLE = True
 except ImportError:
     YAML = None # type: ignore
+    DuplicateKeyError = None # type: ignore
     RUAMEL_AVAILABLE = False
 
 
@@ -49,28 +52,40 @@ class WorkflowValidator:
         else:
             logger.warning(f"Validation requested for unsupported workflow language: {self.language}")
             # Return True for unsupported languages for now to avoid blocking generation
+            # Consider returning False if strict validation is required for all supported types
             return True, f"Validation not implemented for language: {self.language}"
 
     def _validate_cwl(self, workflow_code: str) -> Tuple[bool, Optional[str]]:
-        # Basic validation for CWL
+        """Validate CWL code for basic structure and YAML syntax."""
         if not workflow_code: return False, "Workflow code is empty"
         if 'cwlVersion' not in workflow_code:
             return False, "Missing cwlVersion field"
         if 'class:' not in workflow_code and '"class":' not in workflow_code:
+            # Allow 'class' key with quotes for JSON-like YAML
             return False, "Missing class field (e.g., Workflow, CommandLineTool)"
 
-        # Attempt YAML parsing if available
+        # Attempt YAML parsing to catch syntax errors like duplicate keys
         if RUAMEL_AVAILABLE:
-            yaml = YAML(typ='safe') # Use safe loader
+            yaml = YAML(typ='safe') # Use safe loader (disallows duplicate keys by default)
             try:
+                # Load the code to check for YAML syntax errors
                 yaml.load(workflow_code)
+                logger.debug("CWL code passed basic YAML syntax validation.")
+            except DuplicateKeyError as dke:
+                 # Provide a more specific error message for duplicate keys
+                 error_msg = f"Invalid CWL YAML: Found duplicate key '{dke.problem_mark.name}' near line {dke.problem_mark.line + 1}, column {dke.problem_mark.column + 1}. Original value: {dke.context}"
+                 logger.warning(f"CWL validation failed due to duplicate key: {dke}")
+                 return False, error_msg
             except Exception as e:
-                 return False, f"YAML parsing failed: {e}"
+                 # Catch other YAML parsing errors
+                 error_msg = f"Invalid CWL YAML syntax: {e}"
+                 logger.warning(f"CWL validation failed due to YAML parsing error: {e}")
+                 return False, error_msg
         else:
-             logger.warning("ruamel.yaml not installed. Skipping YAML validation for CWL.")
+             logger.warning("ruamel.yaml not installed. Skipping YAML syntax validation for CWL.")
 
 
-        # TODO: Use cwltool --validate via subprocess
+        # TODO: Use cwltool --validate via subprocess for deeper validation
         # Example (requires cwltool installed and careful path/error handling):
         # try:
         #     # Write code to temp file? Or pipe via stdin?
@@ -82,7 +97,9 @@ class WorkflowValidator:
         #     # return False, "cwltool not found. Cannot perform full validation."
         # except Exception as e:
         #     # return False, f"Error during cwltool validation: {e}"
-        return True, None # Basic check passed
+
+        # If YAML validation passed (or was skipped) and no external tool check failed
+        return True, None # Basic structure and YAML syntax (if checked) are okay
 
     def _validate_nextflow(self, workflow_code: str) -> Tuple[bool, Optional[str]]:
         # Basic validation for Nextflow
@@ -161,8 +178,9 @@ class LLMWorkflowGenerator:
 
     def _clean_llm_response(self, response_text: str) -> str:
         """Strips markdown code fences and whitespace from LLM response."""
-        # Regex to find ```json ... ``` or ``` ... ```
-        match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL | re.IGNORECASE)
+        # Regex to find ```json ... ``` or ```<lang> ... ``` or ``` ... ```
+        # Make language optional and handle potential variations
+        match = re.search(r"```(?:[\w-]+)?\s*(.*?)\s*```", response_text, re.DOTALL | re.IGNORECASE)
         if match:
             cleaned_text = match.group(1).strip()
             logger.debug("Stripped markdown fences from LLM response.")
@@ -258,18 +276,24 @@ class LLMWorkflowGenerator:
                 workflow_name = parsed_llm_json.get('workflow_name', workflow_name) # Keep previous if not provided
                 workflow_summary = parsed_llm_json.get('workflow_summary', workflow_summary) # Keep previous if not provided
 
-                if attempt == 1 or json_parse_error: # If first attempt or correcting a JSON error, expect 'workflow_code'
-                    workflow_code = parsed_llm_json.get('workflow_code', '')
-                else: # Correction attempt for validation error, expect 'corrected_workflow'
+                # Expect 'workflow_code' on first attempt or after JSON error,
+                # 'corrected_workflow' on subsequent validation error corrections.
+                # Use .get() with a default of the *current* workflow_code
+                # to handle cases where the LLM might not return the expected key.
+                if attempt == 1 or json_parse_error:
+                    workflow_code = parsed_llm_json.get('workflow_code', workflow_code)
+                else: # Correction attempt for validation error
                     workflow_code = parsed_llm_json.get('corrected_workflow', workflow_code) # Use corrected or fallback to previous
                     explanation = parsed_llm_json.get('explanation', '(No explanation provided)')
                     logger.info(f"LLM correction explanation: {explanation}")
 
 
                 if not workflow_code:
-                    last_error = "LLM response JSON did not contain workflow code ('workflow_code' or 'corrected_workflow')."
+                    # This can happen if the LLM response (after JSON parsing) didn't contain
+                    # the expected key ('workflow_code' or 'corrected_workflow') AND
+                    # the previous workflow_code was also empty.
+                    last_error = "LLM response JSON did not contain workflow code ('workflow_code' or 'corrected_workflow') and no previous code was available."
                     logger.warning(last_error)
-                    # workflow_code remains as it was (potentially empty)
                     continue # Try again
 
                 # Validate the generated/corrected code
@@ -297,7 +321,7 @@ class LLMWorkflowGenerator:
                         'name': workflow_name,
                         'summary': workflow_summary,
                         'language': language,
-                        'file': str(file_path), # Store absolute path as string
+                        'file': str(file_path.resolve()), # Store absolute path as string
                         'created_at': datetime.datetime.now().isoformat(),
                         'description': description # Store original user description
                     }
@@ -327,9 +351,14 @@ class LLMWorkflowGenerator:
 
         # If loop finishes without returning success
         logger.error(f"Failed to generate valid workflow after {max_attempts} attempts. Last error: {last_error}")
+        # Include the last piece of invalid code in the error message if available
+        final_error_msg = f'Failed to generate valid workflow after {max_attempts} attempts. Last validation error: {last_error}'
+        if workflow_code:
+            final_error_msg += f"\nLast attempted code:\n---\n{workflow_code}\n---"
+
         return {
             'success': False,
-            'error': f'Failed to generate valid workflow after {max_attempts} attempts. Last validation error: {last_error}'
+            'error': final_error_msg
         }
 
     def list_workflows(self) -> List[Dict[str, Any]]:
@@ -482,7 +511,7 @@ class LLMWorkflowGenerator:
                     for name, details in cwl_inputs.items():
                         input_info = {'name': name}
                         if isinstance(details, dict):
-                            input_info['type'] = str(details.get('type', 'unknown'))
+                            input_info['type'] = self._format_cwl_type(details.get('type', 'unknown'))
                             input_info['description'] = details.get('doc', details.get('label', ''))
                         elif isinstance(details, str): # Simple type definition
                             input_info['type'] = details
@@ -494,24 +523,95 @@ class LLMWorkflowGenerator:
                 elif isinstance(cwl_inputs, list): # Array notation (less common for top level)
                      logger.warning("Parsing CWL inputs array notation is not fully supported.")
                      # Handle basic array case if needed
+                     for item in cwl_inputs:
+                         if isinstance(item, dict):
+                             name = list(item.keys())[0] # Assume first key is name
+                             details = item[name]
+                             input_info = {'name': name}
+                             if isinstance(details, dict):
+                                 input_info['type'] = self._format_cwl_type(details.get('type', 'unknown'))
+                                 input_info['description'] = details.get('doc', details.get('label', ''))
+                             elif isinstance(details, str):
+                                 input_info['type'] = details
+                                 input_info['description'] = ''
+                             else:
+                                 input_info['type'] = 'unknown'
+                                 input_info['description'] = ''
+                             inputs.append(input_info)
+
+        except DuplicateKeyError as dke:
+             # This shouldn't happen if validation worked, but handle defensively
+             raise ValueError(f"Duplicate key '{dke.problem_mark.name}' found during input parsing - validation may have failed.") from dke
         except Exception as e:
-            raise ValueError(f"Failed to parse CWL YAML: {e}") from e
+            raise ValueError(f"Failed to parse CWL YAML for inputs: {e}") from e
         return inputs
+
+    def _format_cwl_type(self, cwl_type: Any) -> str:
+        """Helper to format potentially complex CWL types into a string."""
+        if isinstance(cwl_type, str):
+            return cwl_type
+        elif isinstance(cwl_type, list):
+            # Handle optional types (null + type) and arrays of types
+            types = [self._format_cwl_type(t) for t in cwl_type]
+            if "null" in types:
+                types.remove("null")
+                suffix = "?" # Indicate optional
+            else:
+                suffix = ""
+            if len(types) == 1:
+                return types[0] + suffix
+            else:
+                # Multiple non-null types (union) - less common for inputs directly
+                return "|".join(types) + suffix
+        elif isinstance(cwl_type, dict):
+            # Handle records, enums, arrays
+            type_name = cwl_type.get('type')
+            if type_name == 'array':
+                items = self._format_cwl_type(cwl_type.get('items', 'unknown'))
+                return f"Array<{items}>"
+            elif type_name == 'record':
+                return f"Record<{cwl_type.get('name', 'anonymous')}>"
+            elif type_name == 'enum':
+                return f"Enum<{cwl_type.get('name', 'anonymous')}>"
+            else:
+                # Could be other complex types or just a map
+                return str(cwl_type) # Fallback
+        else:
+            return str(cwl_type) # Fallback for unknown types
+
 
     def _parse_nextflow_inputs(self, code: str) -> List[Dict[str, str]]:
         """Basic parsing of Nextflow params using regex."""
         inputs = []
         # Regex to find `params.<name> = <value>` assignments, capturing name and optionally default value
-        # This is very basic and won't capture complex defaults or params defined differently.
-        # It also doesn't capture type information easily.
-        pattern = re.compile(r"params\.(\w+)\s*=\s*(.+?)(?:\s*//|\s*$)")
+        # Handles single/double quotes, triple quotes, simple groovy expressions (basic)
+        # Ignores comments starting with //
+        pattern = re.compile(
+            r"^\s*params\.(\w+)\s*=\s*" # Match 'params.name ='
+            r"(.+?)"                    # Capture the value (non-greedy)
+            r"(?:\s*//.*)?$"            # Optional comment, until end of line
+            , re.MULTILINE
+        )
         for match in pattern.finditer(code):
             name = match.group(1)
-            default_val = match.group(2).strip().strip('\'"') # Basic cleaning of default value
+            # Basic cleaning of default value - remove quotes, strip whitespace
+            default_val = match.group(2).strip()
+            if (default_val.startswith("'") and default_val.endswith("'")) or \
+               (default_val.startswith('"') and default_val.endswith('"')):
+                default_val = default_val[1:-1]
+            elif (default_val.startswith("'''") and default_val.endswith("'''")) or \
+                 (default_val.startswith('"""') and default_val.endswith('"""')):
+                 default_val = default_val[3:-3]
+            # Represent groovy expressions or complex types simply
+            if default_val.startswith('[') or default_val.startswith('{') or '(' in default_val:
+                 desc = f"Default: (expression/complex type)"
+            else:
+                 desc = f"Default: {default_val}"
+
             inputs.append({
                 'name': name,
-                'type': 'param', # Cannot easily determine type
-                'description': f"Default: {default_val}"
+                'type': 'param', # Cannot easily determine type from regex
+                'description': desc
             })
         if not inputs:
              logger.warning("Basic Nextflow parser found no 'params.<name> = ...' declarations.")
@@ -521,79 +621,97 @@ class LLMWorkflowGenerator:
         """Basic parsing of WDL workflow inputs using regex."""
         inputs = []
         # Find the 'workflow {...}' block first
-        workflow_match = re.search(r"workflow\s+\w+\s*\{", code, re.DOTALL)
+        # Make workflow name optional in regex to handle anonymous workflows? No, spec requires name.
+        workflow_match = re.search(r"workflow\s+(\w+)\s*\{", code, re.DOTALL)
         if not workflow_match:
-            # Maybe it's just tasks? Look for task inputs. This is ambiguous.
-            # Let's focus on the main workflow block for now.
-            logger.warning("Basic WDL parser could not find 'workflow {...}' block.")
-            return inputs # Or raise error?
+            logger.warning("Basic WDL parser could not find 'workflow <name> {' block.")
+            # Could potentially look for task inputs, but let's stick to workflow inputs
+            return inputs
 
-        # Find the 'input {...}' block within the workflow block
-        # This requires finding matching braces, which regex struggles with.
-        # Use a simpler regex for now, looking for declarations within the workflow block
-        # Pattern: `Type name = default` or `Type name` within the workflow scope (approximate)
-        # This is highly approximate and likely to fail on complex WDL.
-        pattern = re.compile(r"^\s*(\w+(?:\[\w+\])?\??)\s+(\w+)\s*(?:=\s*(.+))?$", re.MULTILINE)
+        workflow_content_start = workflow_match.end()
+        # Very naive approach to find the end of the workflow block
+        # This doesn't handle nested braces correctly.
+        # A better approach would use a parser or more sophisticated brace matching.
+        workflow_content_end = code.find('}', workflow_content_start)
+        if workflow_content_end == -1:
+            workflow_content_end = len(code) # Fallback if closing brace not found
 
-        # Limit search roughly to the workflow block (very approximate brace matching)
-        start_pos = workflow_match.end()
-        # Find potential end brace (very naive)
-        end_pos_match = re.search(r"\}", code[start_pos:], re.MULTILINE)
-        end_pos = end_pos_match.start() + start_pos if end_pos_match else len(code)
+        workflow_content = code[workflow_content_start:workflow_content_end]
 
-        for match in pattern.finditer(code, pos=start_pos, endpos=end_pos):
-             # Check if it's likely within an 'input {}' block (heuristic)
-             # Find the last occurrence of 'input {' before the match
-             input_block_start = code.rfind('input {', 0, match.start())
-             if input_block_start != -1:
-                 # Find the closing brace for that input block (naive)
-                 input_block_end = code.find('}', input_block_start)
-                 if input_block_end != -1 and match.start() < input_block_end:
-                     # Likely inside an input block
-                     wdl_type = match.group(1)
-                     name = match.group(2)
-                     default_val = match.group(3)
-                     inputs.append({
-                         'name': name,
-                         'type': wdl_type,
-                         'description': f"Default: {default_val.strip()}" if default_val else "(No default)"
-                     })
+        # Find the 'input {...}' block within the workflow content
+        input_match = re.search(r"input\s*\{", workflow_content)
+        if not input_match:
+            logger.warning("Basic WDL parser could not find 'input {...}' block within workflow.")
+            # WDL allows inputs directly in workflow scope in WDL >= 1.0
+            # Let's try parsing declarations directly in workflow scope as fallback
+            input_content = workflow_content
+            input_content_start = 0
+        else:
+            input_content_start = input_match.end()
+            # Naive brace matching for end of input block
+            input_content_end = workflow_content.find('}', input_content_start)
+            if input_content_end == -1:
+                input_content_end = len(workflow_content) # Fallback
+            input_content = workflow_content[input_content_start:input_content_end]
+
+
+        # Pattern: `Type name = default` or `Type name` within the input scope
+        # Handles optional types (Type?), Array[Type], Map[Type, Type], Pair[Type, Type]
+        # Ignores comments starting with #
+        pattern = re.compile(
+            r"^\s*"                                  # Start of line, optional whitespace
+            r"((?:Array|Map|Pair)\[.+?\]\??|\w+\??)" # Type (simple, generic, optional)
+            r"\s+"                                   # Separator
+            r"(\w+)"                                 # Variable name
+            r"(?:\s*=\s*(.+?))?"                     # Optional default value (non-greedy)
+            r"(?:\s*#.*)?$"                          # Optional comment, until end of line
+            , re.MULTILINE
+        )
+
+        for match in pattern.finditer(input_content):
+             wdl_type = match.group(1)
+             name = match.group(2)
+             default_val = match.group(3)
+             inputs.append({
+                 'name': name,
+                 'type': wdl_type,
+                 'description': f"Default: {default_val.strip()}" if default_val else "(No default)"
+             })
 
         if not inputs:
-             logger.warning("Basic WDL parser found no input declarations like 'Type name' within workflow block.")
+             logger.warning("Basic WDL parser found no input declarations like 'Type name' within workflow input block or scope.")
         return inputs
 
 
     def _parse_snakemake_inputs(self, code: str) -> List[Dict[str, str]]:
         """Basic parsing of Snakemake config access using regex."""
         inputs = []
-        # Look for `config["<name>"]` or `config['<name>']`
-        pattern = re.compile(r"""config\[\s*['"]([^'"]+)['"]\s*\]""")
-        found_keys = set()
-        for match in pattern.finditer(code):
-            key = match.group(1)
-            if key not in found_keys:
-                inputs.append({
-                    'name': key,
-                    'type': 'config',
-                    'description': 'Accessed via config dictionary'
-                })
-                found_keys.add(key)
+        # Look for `config["<name>"]` or `config['<name>']` or `config.get('<name>')` etc.
+        # Also look for `workflow.config[...]`
+        # This is heuristic and might miss complex access patterns or find false positives in comments/strings.
+        patterns = [
+            re.compile(r"""config\[\s*['"]([^'"]+)['"]\s*\]"""),
+            re.compile(r"""config\.get\(\s*['"]([^'"]+)['"]"""),
+            re.compile(r"""workflow\.config\[\s*['"]([^'"]+)['"]\s*\]"""),
+            re.compile(r"""workflow\.config\.get\(\s*['"]([^'"]+)['"]"""),
+            # Potentially add config.<key> if needed, but more prone to false positives
+            # re.compile(r"""config\.(\w+)""")
+        ]
 
-        # Look for `workflow.config["<name>"]` etc.
-        pattern_wf = re.compile(r"""workflow\.config\[\s*['"]([^'"]+)['"]\s*\]""")
-        for match in pattern_wf.finditer(code):
-             key = match.group(1)
-             if key not in found_keys:
-                 inputs.append({
-                     'name': key,
-                     'type': 'config',
-                     'description': 'Accessed via workflow.config dictionary'
-                 })
-                 found_keys.add(key)
+        found_keys = set()
+        for pattern in patterns:
+            for match in pattern.finditer(code):
+                key = match.group(1)
+                if key not in found_keys:
+                    inputs.append({
+                        'name': key,
+                        'type': 'config',
+                        'description': 'Accessed via config dictionary'
+                    })
+                    found_keys.add(key)
 
         if not inputs:
-             logger.warning("Basic Snakemake parser found no config['key'] access patterns.")
+             logger.warning("Basic Snakemake parser found no config['key'] or config.get('key') access patterns.")
         return inputs
 
 
