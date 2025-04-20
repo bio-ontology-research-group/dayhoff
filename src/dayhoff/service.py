@@ -317,8 +317,9 @@ class DayhoffService:
 
     def execute_command(self, command: str, args: List[str]) -> Any:
         """
-        Execute a registered command or treat input as a workflow generation request.
+        Execute a registered command.
         The 'command' argument should be the command name *without* the leading '/'.
+        Natural language input is handled directly by the REPL calling _handle_workflow_generation.
         """
         logger.info(f"Executing command: {command} with args: {args}")
 
@@ -380,17 +381,11 @@ class DayhoffService:
                 console.print(f"[error]Unexpected Error:[/error] {type(e).__name__}: {e}")
                 return None
         else:
-            # If command is NOT in the map, treat the original input as a workflow generation request
-            logger.info(f"Command '{command}' not found in command map, treating as workflow generation request.")
-            # Reconstruct the original input string
-            full_input = command + (' ' + ' '.join(args) if args else '')
-            try:
-                return self._handle_workflow_generation(full_input)
-            except Exception as e:
-                # Catch errors during workflow generation attempt
-                logger.error(f"Error attempting workflow generation for input '{full_input}': {e}", exc_info=True)
-                console.print(f"[error]Unknown command:[/error] /{command}. Attempted workflow generation failed: {e}")
-                return None
+            # If command is NOT in the map, it's an unknown command.
+            # Workflow generation is now handled explicitly in the REPL.
+            logger.warning(f"Unknown command '/{command}' received.")
+            console.print(f"[error]Unknown command:[/error] /{command}. Type /help for available commands.")
+            return None
 
 
     # --- Help Handler ---
@@ -414,12 +409,29 @@ class DayhoffService:
             status_line += f" | Exec: [bold]{exec_mode}[/]" # Add exec mode
             status_line += f" | Queue: [bold]{queue_size}[/]" # Add queue size
 
+            # Check LLM config status for workflow generation hint
+            llm_configured = False
+            try:
+                llm_cfg = self.config.get_llm_config()
+                if llm_cfg.get('api_key') and llm_cfg.get('model'):
+                    llm_configured = True
+            except Exception: pass
+
+            help_text_lines = [
+                f"[bold]Dayhoff REPL[/bold] - Type /<command> [arguments] to execute.",
+                status_line,
+                f"Workflow: {current_language.upper()} (Executor: {current_executor}) - Use /language, /config",
+                f"LLM: {llm_provider.upper()} (Model: {llm_model}) - Use /config",
+            ]
+            if llm_configured:
+                 help_text_lines.append("Type text without '/' to generate a workflow.")
+            else:
+                 help_text_lines.append("[dim]LLM not configured - workflow generation disabled.[/dim]")
+            help_text_lines.append("Type /help <command> for details.")
+
+
             console.print(Panel(
-                f"[bold]Dayhoff REPL[/bold] - Type /<command> [arguments] to execute.\n"
-                f"{status_line}\n"
-                f"Workflow: {current_language.upper()} (Executor: {current_executor}) - Use /language, /config\n"
-                f"LLM: {llm_provider.upper()} (Model: {llm_model}) - Use /config\n"
-                f"Type /help <command> for details.",
+                "\n".join(help_text_lines),
                 title="Dayhoff Help",
                 expand=False
             ))
@@ -2474,5 +2486,6 @@ class DayhoffService:
             
         except Exception as e:
             logger.error(f"Error generating workflow: {e}", exc_info=True)
+            # Raise runtime error so the REPL can catch and display it
             raise RuntimeError(f"Error generating workflow: {e}") from e
 

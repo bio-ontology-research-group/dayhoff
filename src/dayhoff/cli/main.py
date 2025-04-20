@@ -12,11 +12,15 @@ except ImportError:
     readline = None # type: ignore
 
 from ..service import DayhoffService
+from ..config import config # Import config to check LLM availability early
 
 # Configure logging for the CLI
 logger = logging.getLogger(__name__)
 # Example basic config, could be more sophisticated (e.g., file logging)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Only configure basicConfig if no handlers are already attached (e.g., by another part of the app)
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 
 # --- Readline Setup for Autocompletion ---
 
@@ -91,12 +95,22 @@ def repl():
     """Start the Dayhoff interactive REPL."""
     service = DayhoffService()
     setup_readline(service) # Setup history and completion
-    print("Welcome to the Dayhoff REPL. Type '/help' for commands, '/exit' or Ctrl+D to quit.")
 
-    # --- Diagnostic Print ---
-    # Print the commands loaded by this specific service instance and used for completion
-    # logger.debug(f"Commands available for completion: {COMMANDS}") # Use logger instead of print
-    # --- End Diagnostic Print ---
+    # Check LLM config status for workflow generation hint
+    llm_configured = False
+    try:
+        llm_config = config.get_llm_config()
+        if llm_config.get('api_key') and llm_config.get('model'):
+            llm_configured = True
+    except Exception:
+        pass # Ignore errors checking config here
+
+    print("Welcome to the Dayhoff REPL.")
+    print("Type '/help' for commands, '/exit' or Ctrl+D to quit.")
+    if llm_configured:
+        print("Type any text without a leading '/' to generate a workflow using the LLM.")
+    else:
+        print("[Warning] LLM not configured. Workflow generation via natural language is disabled. Use '/config set LLM ...'")
 
 
     while True:
@@ -124,32 +138,28 @@ def repl():
             if line.lower() in ['/exit', '/quit']:
                 break
 
-            if not line.startswith('/'):
-                # Allow simple shell commands if not connected? Maybe not for now.
-                # print("Error: Commands must start with '/' (e.g., /help).")
-                # Treat non-slash commands as potential /hpc_run if connected, or error otherwise?
-                # For now, stick to requiring '/'
-                if status['mode'] == 'connected':
-                     print("Error: Commands must start with '/'. Did you mean '/hpc_run ...'?")
-                else:
-                     print("Error: Commands must start with '/' (e.g., /help, /ls, /cd).")
-                continue
+            if line.startswith('/'):
+                # --- Handle standard commands ---
+                # Parse command and arguments
+                try:
+                    parts = shlex.split(line)
+                except ValueError as e:
+                    service.console.print(f"[error]Error parsing command:[/error] {e}") # Use service console
+                    continue
 
-            # Parse command and arguments
-            try:
-                parts = shlex.split(line)
-            except ValueError as e:
-                print(f"Error parsing command: {e}") # Handle unbalanced quotes etc.
-                continue
+                command = parts[0][1:] # Remove leading '/'
+                args = parts[1:]
 
-            command = parts[0][1:] # Remove leading '/'
-            args = parts[1:]
+                # Execute command via service
+                # execute_command handles printing its own output/errors
+                service.execute_command(command, args)
+            else:
+                # --- Handle natural language input for workflow generation ---
+                logger.info(f"Treating input as workflow generation request: {line}")
+                # Directly call the workflow generation handler in the service
+                # This method handles LLM checks and printing output/errors
+                service._handle_workflow_generation(line)
 
-            # Execute command via service
-            result = service.execute_command(command, args)
-            # execute_command now handles printing its own output via console.print
-            # if result: # Print result only if it's not empty/None and not handled by handler
-            #     print(result)
 
         except KeyboardInterrupt:
             print("\nInterrupted. Type /exit or Ctrl+D to quit.") # Add newline for clarity
@@ -159,7 +169,11 @@ def repl():
         except Exception as e:
             # Catch unexpected errors in the REPL loop itself
             logger.error(f"Unexpected error in REPL: {e}", exc_info=True)
-            print(f"An unexpected error occurred: {e}")
+            # Use service console for consistency if available, else print
+            try:
+                 service.console.print(f"[error]An unexpected error occurred in the REPL:[/error] {e}")
+            except:
+                 print(f"An unexpected error occurred in the REPL: {e}")
 
 
 @cli.command()
@@ -170,10 +184,9 @@ def execute(command, args):
     service = DayhoffService()
     # Reconstruct args list if needed (Click might handle spaces okay)
     # For simplicity, assume args are passed correctly by Click
-    result = service.execute_command(command, list(args))
     # execute_command handles printing via console, so don't print result here
-    # if result:
-    #     print(result)
+    service.execute_command(command, list(args))
+
 
 # Example of how other subcommands could be added
 # @cli.command()
