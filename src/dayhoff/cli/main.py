@@ -156,9 +156,9 @@ def repl():
             else:
                 # --- Handle natural language input for workflow generation ---
                 logger.info(f"Treating input as workflow generation request: {line}")
-                # Directly call the workflow generation handler in the service
+                # Directly call the public natural language handler in the service
                 # This method handles LLM checks and printing output/errors
-                service._handle_workflow_generation(line)
+                service.handle_natural_language_input(line)
 
 
         except KeyboardInterrupt:
