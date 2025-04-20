@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import datetime
 import subprocess # Added for potential external validation
+import re # Added for cleaning response
 
 from ..config import config
 from ..llm.prompt import PromptManager
@@ -137,6 +138,20 @@ class LLMWorkflowGenerator:
         except Exception as e:
             logger.error(f"Failed to save workflows index file ({self.workflows_index_file}): {e}", exc_info=True)
 
+    def _clean_llm_response(self, response_text: str) -> str:
+        """Strips markdown code fences and whitespace from LLM response."""
+        # Regex to find ```json ... ``` or ``` ... ```
+        match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            cleaned_text = match.group(1).strip()
+            logger.debug("Stripped markdown fences from LLM response.")
+            return cleaned_text
+        else:
+            # If no fences found, just strip leading/trailing whitespace
+            cleaned_text = response_text.strip()
+            logger.debug("No markdown fences found, just stripped whitespace.")
+            return cleaned_text
+
     def generate_workflow(self, description: str, max_attempts: int = 3) -> Dict[str, Any]:
         """
         Generate a workflow based on the description, validate, and save it.
@@ -154,9 +169,11 @@ class LLMWorkflowGenerator:
         workflow_name = "Untitled Workflow"
         workflow_summary = "No summary provided"
         last_error = "Failed to get initial response from LLM"
+        last_raw_response = "" # Store the raw response from the last failed attempt
 
         for attempt in range(1, max_attempts + 1):
             logger.info(f"Workflow generation attempt {attempt}/{max_attempts} for language: {language}")
+            json_parse_error = False # Flag to track if JSON parsing failed this attempt
             try:
                 if attempt == 1:
                     # First attempt: generate from description
@@ -166,47 +183,67 @@ class LLMWorkflowGenerator:
                     })
                 else:
                     # Subsequent attempts: try to correct previous code
-                    if not workflow_code: # Should not happen if first attempt failed cleanly, but safety check
-                         logger.error("Correction attempt requested but no previous workflow code available.")
-                         return {'success': False, 'error': 'Internal error: Cannot correct empty workflow.'}
-                    prompt = self.prompt_manager.generate_prompt('workflow_correction', {
-                        'language': language,
-                        'workflow_code': workflow_code, # Use the code from the previous failed attempt
-                        'validation_errors': last_error # Provide the error message
-                    })
+                    # Use the raw response if JSON parsing failed, otherwise use the extracted code
+                    code_to_correct = last_raw_response if not workflow_code and last_raw_response else workflow_code
+                    if not code_to_correct:
+                         logger.error("Correction attempt requested but no previous workflow code or raw response available.")
+                         # Use a generic correction prompt if we have nothing else
+                         prompt = self.prompt_manager.generate_prompt('workflow_generation', {
+                             'description': f"Correct the previous attempt to generate a {language} workflow for: {description}. The previous attempt failed with error: {last_error}",
+                             'language': language
+                         })
+                         logger.warning("Falling back to generation prompt for correction attempt due to missing previous code.")
+                    else:
+                         prompt = self.prompt_manager.generate_prompt('workflow_correction', {
+                             'language': language,
+                             'workflow_code': code_to_correct, # Use raw response or previous code
+                             'validation_errors': last_error # Provide the error message
+                         })
 
                 # Call the LLM Client
                 response_data = self.llm_client.generate(prompt)
                 llm_response_text = response_data.get('response') # Get the actual response string
+                last_raw_response = llm_response_text # Store raw response for potential correction
 
                 if not llm_response_text:
                     last_error = "LLM returned an empty response."
                     logger.warning(last_error)
                     continue # Try again
 
+                # Clean the response (remove markdown fences)
+                cleaned_response_text = self._clean_llm_response(llm_response_text)
+
+                if not cleaned_response_text:
+                     last_error = "LLM response was empty after cleaning."
+                     logger.warning(last_error)
+                     continue # Try again
+
                 # Parse the JSON response from the LLM
                 try:
-                    parsed_llm_json = json.loads(llm_response_text)
+                    parsed_llm_json = json.loads(cleaned_response_text)
                 except json.JSONDecodeError as json_err:
-                    last_error = f"LLM response was not valid JSON: {json_err}\nResponse text:\n{llm_response_text}"
+                    json_parse_error = True # Mark that JSON parsing failed
+                    last_error = f"LLM response was not valid JSON after cleaning: {json_err}\nCleaned text:\n{cleaned_response_text}"
                     logger.warning(last_error)
-                    # Maybe try to extract code directly if JSON fails? Risky.
-                    # For now, treat invalid JSON as a failure for this attempt.
+                    # Do NOT reset workflow_code here if it was valid before
                     continue # Try again
 
+                # --- JSON Parsing Succeeded ---
                 # Extract data based on the prompt used
-                if attempt == 1:
+                if attempt == 1 or json_parse_error: # If first attempt or correcting a JSON error, expect full structure
                     workflow_code = parsed_llm_json.get('workflow_code', '')
                     workflow_name = parsed_llm_json.get('workflow_name', f"Workflow_{language}_{datetime.datetime.now().strftime('%Y%m%d%H%M')}")
                     workflow_summary = parsed_llm_json.get('workflow_summary', 'No summary available')
-                else: # Correction attempt
+                else: # Correction attempt for validation error
                     workflow_code = parsed_llm_json.get('corrected_workflow', workflow_code) # Use corrected or fallback to previous
                     explanation = parsed_llm_json.get('explanation', '(No explanation provided)')
                     logger.info(f"LLM correction explanation: {explanation}")
+                    # Keep previous name and summary during correction
 
                 if not workflow_code:
-                    last_error = "LLM response JSON did not contain workflow code."
+                    last_error = "LLM response JSON did not contain workflow code ('workflow_code' or 'corrected_workflow')."
                     logger.warning(last_error)
+                    # workflow_code remains as it was (potentially empty)
                     continue # Try again
 
                 # Validate the generated/corrected code
@@ -250,7 +287,7 @@ class LLMWorkflowGenerator:
                     # Validation failed, store error for next attempt or final failure message
                     last_error = error_message or "Validation failed with unspecified error."
                     logger.warning(f"Workflow validation failed on attempt {attempt}: {last_error}")
-                    # Loop continues to the next attempt
+                    # Loop continues to the next attempt, workflow_code holds the invalid code
 
             except (ConnectionError, ValueError, RuntimeError, Exception) as e:
                 # Catch errors during LLM call or prompt generation
