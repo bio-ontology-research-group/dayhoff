@@ -1,6 +1,6 @@
 import json
 import shlex
-from typing import Any, List, Dict, Optional, Protocol, Tuple # Added Protocol, Tuple
+from typing import Any, List, Dict, Optional, Protocol, Tuple, Set # Added Protocol, Tuple, Set
 import logging # Added logging
 import os # Added os import
 import subprocess # Added for running test scripts
@@ -19,6 +19,7 @@ from rich.theme import Theme
 from rich.panel import Panel
 from rich.live import Live
 from rich.spinner import Spinner
+from rich.table import Table # Added for queue show
 
 # --- Core Components ---
 # Import the GLOBAL config instance and renamed ALLOWED_WORKFLOW_LANGUAGES
@@ -142,6 +143,7 @@ class DayhoffService:
         self.remote_cwd: Optional[str] = None
         self.local_cwd: str = os.getcwd() # Track local CWD
         self.llm_client: Optional[LLMClient] = None # Initialize LLM client as None
+        self.file_queue: List[str] = [] # Initialize the file queue
         logger.info(f"DayhoffService initialized. Local CWD: {self.local_cwd}")
         self._command_map = self._build_command_map()
 
@@ -245,6 +247,17 @@ class DayhoffService:
                     Allowed languages: {", ".join(ALLOWED_WORKFLOW_LANGUAGES)}
                     Note: To set the default *executor* for a language, use '/config set WORKFLOWS <lang>_default_executor <executor_name>'.""") # Updated help
             },
+            "queue": { # New command group
+                "handler": self._handle_queue,
+                 "help": textwrap.dedent("""\
+                    Manage the file queue for processing.
+                    Usage: /queue <subcommand> [arguments]
+                    Subcommands:
+                      add <path...> : Add file(s) or directory(s) (recursive) to the queue. Paths are relative to CWD.
+                      show          : Display the files currently in the queue.
+                      remove <idx...> : Remove files from the queue by their index number (from /queue show).
+                      clear         : Remove all files from the queue.""")
+            },
         }
 
     def get_available_commands(self) -> List[str]:
@@ -254,6 +267,7 @@ class DayhoffService:
     def get_status(self) -> Dict[str, Any]:
         """Returns the current connection status and context."""
         exec_mode = self.config.get_execution_mode()
+        queue_size = len(self.file_queue) # Get queue size
         if self.active_ssh_manager and self.active_ssh_manager.is_connected:
             return {
                 "mode": "connected",
@@ -261,6 +275,7 @@ class DayhoffService:
                 "user": self.active_ssh_manager.username,
                 "cwd": self.remote_cwd or "~", # Provide default if None
                 "exec_mode": exec_mode, # Add execution mode status
+                "queue_size": queue_size, # Add queue size
             }
         else:
             return {
@@ -269,6 +284,7 @@ class DayhoffService:
                 "user": None,
                 "cwd": self.local_cwd,
                 "exec_mode": exec_mode, # Add execution mode status
+                "queue_size": queue_size, # Add queue size
             }
 
     def execute_command(self, command: str, args: List[str]) -> Any:
@@ -318,6 +334,10 @@ class DayhoffService:
                  logger.warning(f"Validation error during /{command}: {e}")
                  console.print(f"[error]Validation Error:[/error] {e}")
                  return None
+            except IndexError as e: # Catch index errors specifically (e.g., for /queue remove)
+                 logger.warning(f"Index error during /{command}: {e}")
+                 console.print(f"[error]Index Error:[/error] {e}")
+                 return None
             except NotImplementedError as e:
                  logger.warning(f"Feature not implemented for /{command}: {e}")
                  console.print(f"[warning]Not Implemented:[/warning] {e}")
@@ -342,6 +362,7 @@ class DayhoffService:
             llm_provider = self.config.get('LLM', 'provider', 'N/A')
             llm_model = self.config.get('LLM', 'model', 'N/A')
             exec_mode = status['exec_mode'] # Get from status
+            queue_size = status['queue_size'] # Get queue size
 
             # Build status line
             if status['mode'] == 'connected':
@@ -349,7 +370,7 @@ class DayhoffService:
             else:
                 status_line = f"Mode: [bold yellow]Local[/] ({status['cwd']})"
             status_line += f" | Exec: [bold]{exec_mode}[/]" # Add exec mode
-
+            status_line += f" | Queue: [bold]{queue_size}[/]" # Add queue size
 
             console.print(Panel(
                 f"[bold]Dayhoff REPL[/bold] - Type /<command> [arguments] to execute.\n"
@@ -362,10 +383,11 @@ class DayhoffService:
             ))
 
             console.print("\n[bold cyan]Available commands:[/bold cyan]")
-            # Group commands logically?
+            # Group commands logically
             cmd_groups = {
                 "General": ["help", "config", "language", "test"],
                 "File System (Local/Remote)": ["ls", "cd", "fs_head"], # fs_head is local only
+                "File Queue": ["queue"], # New category
                 "HPC Connection": ["hpc_connect", "hpc_disconnect"],
                 "HPC Execution": ["hpc_run"],
                 "Slurm": ["hpc_slurm_run", "hpc_slurm_submit", "hpc_slurm_status"],
@@ -439,7 +461,7 @@ class DayhoffService:
                      # Use StringIO to capture help message if needed elsewhere
                      help_io = io.StringIO()
                      self._print_message(message, help_io)
-                     console.print(help_io.getvalue())
+                     console.print(help_io.getvalue().strip()) # Strip trailing newline from help
                  # Raise a specific exception or just return to signal help was printed
                  raise SystemExit() # Caught by help handler
 
@@ -967,7 +989,129 @@ class DayhoffService:
             raise RuntimeError(f"Error reading file head: {e}") from e
 
 
-    # --- HPC Bridge Handlers ---
+    # --- HPC Bridge Helpers ---
+
+    def _resolve_path(self, relative_path: str) -> Tuple[str, str]:
+        """
+        Resolves a relative path to an absolute path, returning both the
+        absolute path and the CWD used for resolution. Handles local vs remote.
+        """
+        status = self.get_status()
+        if status['mode'] == 'connected':
+            # Remote Path Resolution
+            if not self.active_ssh_manager or self.remote_cwd is None:
+                raise ConnectionError("Cannot resolve remote path: Not connected or CWD unknown.")
+
+            # Use `realpath` command on remote host for canonical path
+            # Need to change to the CWD first
+            command = f"cd {shlex.quote(self.remote_cwd)} && realpath -e --canonicalize-missing {shlex.quote(relative_path)}"
+            try:
+                abs_path = self.active_ssh_manager.execute_command(command, timeout=15).strip()
+                # Check if realpath succeeded (it might return empty or error message on failure)
+                if not abs_path.startswith('/'):
+                    # `realpath -e` returns non-zero status if path doesn't exist
+                    # execute_command should raise RuntimeError in that case.
+                    # If we get here, it means SSH command succeeded but output is weird.
+                    # Let's try a simpler check using `test -e` before returning failure.
+                     test_cmd = f"cd {shlex.quote(self.remote_cwd)} && test -e {shlex.quote(relative_path)}"
+                     try:
+                         self.active_ssh_manager.execute_command(test_cmd, timeout=10)
+                         # If test -e succeeds, maybe realpath isn't available? Fallback.
+                         # Construct path manually (less robust for .. etc.)
+                         # We need a more reliable way if realpath fails/is not present.
+                         # Let's assume execute_command raises error if path doesn't exist based on realpath -e exit code.
+                         # If we are here without an error, realpath output might be unexpected.
+                         logger.warning(f"Remote 'realpath' command returned unexpected output: '{abs_path}' for path '{relative_path}'. Falling back to simpler check.")
+                         raise FileNotFoundError(f"Could not resolve remote path: '{relative_path}' relative to '{self.remote_cwd}'. 'realpath' failed.")
+
+                     except (RuntimeError, TimeoutError): # test -e failed or timed out
+                          raise FileNotFoundError(f"Remote path not found: '{relative_path}' relative to '{self.remote_cwd}'.")
+
+                return abs_path, self.remote_cwd
+            except RuntimeError as e:
+                # Capture command failure which likely means path doesn't exist
+                raise FileNotFoundError(f"Remote path not found or error resolving '{relative_path}' relative to '{self.remote_cwd}': {e}") from e
+            except (ConnectionError, TimeoutError) as e:
+                 raise ConnectionError(f"Connection error resolving remote path '{relative_path}': {e}") from e
+
+        else:
+            # Local Path Resolution
+            target_path = Path(self.local_cwd) / relative_path
+            try:
+                # Use resolve(strict=True) to ensure the path exists
+                abs_path_obj = target_path.resolve(strict=True)
+                return str(abs_path_obj), self.local_cwd
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"Local path not found: '{target_path}'") from e
+            except Exception as e: # Catch potential permission errors etc. during resolve
+                 raise RuntimeError(f"Error resolving local path '{target_path}': {e}") from e
+
+    def _get_path_type(self, abs_path: str) -> str:
+        """
+        Determines if an absolute path is a file or directory. Handles local vs remote.
+        Returns 'file', 'directory', or raises error.
+        """
+        status = self.get_status()
+        if status['mode'] == 'connected':
+            if not self.active_ssh_manager:
+                raise ConnectionError("Cannot check remote path type: Not connected.")
+            try:
+                # Use test -d and test -f
+                if self.active_ssh_manager.execute_command(f"test -d {shlex.quote(abs_path)}", check_exit_code=True, timeout=10):
+                    return 'directory'
+                elif self.active_ssh_manager.execute_command(f"test -f {shlex.quote(abs_path)}", check_exit_code=True, timeout=10):
+                     return 'file'
+                else:
+                    # Should have been caught by resolve, but double-check
+                    raise FileNotFoundError(f"Remote path exists but is not a file or directory: {abs_path}")
+            except RuntimeError as e:
+                 # Command failed, likely doesn't exist or permission error
+                 raise FileNotFoundError(f"Error checking type of remote path '{abs_path}': {e}") from e
+            except (ConnectionError, TimeoutError) as e:
+                 raise ConnectionError(f"Connection error checking type of remote path '{abs_path}': {e}") from e
+        else:
+            # Local check
+            path_obj = Path(abs_path)
+            if not path_obj.exists(): # Should have been caught by resolve
+                 raise FileNotFoundError(f"Local path does not exist: {abs_path}")
+            if path_obj.is_dir():
+                return 'directory'
+            elif path_obj.is_file():
+                return 'file'
+            else:
+                 raise FileNotFoundError(f"Local path exists but is not a file or directory: {abs_path}")
+
+
+    def _list_remote_files_recursive(self, abs_dir_path: str) -> List[str]:
+        """
+        Recursively lists all *files* within a remote directory using SSH.
+        Returns a list of absolute file paths.
+        """
+        if not self.active_ssh_manager:
+            raise ConnectionError("Cannot list remote files: Not connected.")
+
+        # Use find to list only files (-type f) and print their paths (%p) relative to the start dir
+        # Use -print0 and split('\0') for safer handling of filenames with whitespace/newlines
+        command = f"find {shlex.quote(abs_dir_path)} -type f -print0"
+        try:
+            output = self.active_ssh_manager.execute_command(command, timeout=120) # Longer timeout for deep dirs
+             # Split by null character, filter out empty strings resulting from trailing null
+            file_paths = [p for p in output.split('\0') if p]
+            # Ensure paths are absolute (find should already provide them based on the absolute input path)
+            # Basic check:
+            valid_paths = [p for p in file_paths if p.startswith(abs_dir_path)]
+            if len(valid_paths) != len(file_paths):
+                 logger.warning(f"Some paths from 'find' did not start with the base directory '{abs_dir_path}'. Output: {output}")
+                 # Decide whether to return only valid_paths or raise error
+                 # For now, return only the seemingly valid ones
+            return valid_paths
+        except RuntimeError as e:
+             # Command failed, possibly directory not found or permission error
+             raise RuntimeError(f"Error listing files in remote directory '{abs_dir_path}': {e}") from e
+        except (ConnectionError, TimeoutError) as e:
+             raise ConnectionError(f"Connection error listing files in remote directory '{abs_dir_path}': {e}") from e
+
+    # --- HPC Bridge Handlers --- Updated structure
     def _get_ssh_manager(self, connect_now: bool = False) -> SSHManager:
         """Helper to get an initialized SSHManager."""
         ssh_config_dict = self.config.get_ssh_config() # Renamed variable for clarity
@@ -1049,11 +1193,18 @@ class DayhoffService:
                     logger.info(f"Persistent SSH connection to {host} is already active.")
                     if self.remote_cwd is None: # Check if CWD is None
                         try:
-                            self.remote_cwd = self.active_ssh_manager.execute_command("pwd", timeout=10).strip()
+                            # Use pwd -P to get physical directory, avoid symlink issues if possible
+                            self.remote_cwd = self.active_ssh_manager.execute_command("pwd -P", timeout=10).strip()
                             logger.info(f"Refreshed remote CWD: {self.remote_cwd}")
                         except Exception as pwd_err:
                             logger.warning(f"Could not refresh remote CWD on existing connection: {pwd_err}")
-                            self.remote_cwd = "~" # Default CWD
+                            # Attempt simpler 'pwd' as fallback
+                            try:
+                                self.remote_cwd = self.active_ssh_manager.execute_command("pwd", timeout=10).strip()
+                                logger.info(f"Refreshed remote CWD (fallback): {self.remote_cwd}")
+                            except Exception as pwd_err_fallback:
+                                logger.warning(f"Could not refresh remote CWD using fallback 'pwd': {pwd_err_fallback}")
+                                self.remote_cwd = "~" # Default CWD
                     console.print(f"Already connected to HPC host: {host} (cwd: {self.remote_cwd}). Use /hpc_disconnect first to reconnect.", style="info")
                     return None # Already connected
                 except (ConnectionError, TimeoutError, RuntimeError) as e:
@@ -1092,10 +1243,14 @@ class DayhoffService:
                 logger.info(f"SSH connection verified. Remote hostname: {hostname}")
 
                 try:
-                    initial_cwd = ssh_manager.execute_command("pwd", timeout=10).strip()
+                    # Use pwd -P to get physical directory, avoid symlink issues if possible
+                    initial_cwd = ssh_manager.execute_command("pwd -P", timeout=10).strip()
                     if not initial_cwd:
-                        logger.warning("Could not determine initial remote working directory, defaulting to '~'.")
-                        initial_cwd = "~"
+                        logger.warning("Could not determine initial remote working directory using 'pwd -P', trying 'pwd'.")
+                        initial_cwd = ssh_manager.execute_command("pwd", timeout=10).strip()
+                        if not initial_cwd:
+                             logger.warning("Could not determine initial remote working directory using 'pwd' either, defaulting to '~'.")
+                             initial_cwd = "~"
                 except (ConnectionError, TimeoutError, RuntimeError) as pwd_err:
                      logger.warning(f"Could not determine initial remote working directory ({pwd_err}), defaulting to '~'.")
                      initial_cwd = "~"
@@ -1180,22 +1335,26 @@ class DayhoffService:
             command_to_run = ""
             exec_via = "" # For logging
 
+            # Ensure we are in the correct directory before execution
+            cd_cmd = f"cd {shlex.quote(self.remote_cwd)}"
+
             if exec_mode == 'slurm':
                 # Wrap in srun
                 srun_command = f"srun --pty {user_command}"
-                command_to_run = f"cd {shlex.quote(self.remote_cwd)} && {srun_command}"
+                command_to_run = f"{cd_cmd} && {srun_command}"
                 exec_via = "srun"
                 logger.info(f"Executing command via {exec_via} due to execution_mode='slurm': {command_to_run}")
                 # Use a longer timeout for potential Slurm allocation delays
                 timeout = 600 # 10 min timeout
             else: # Default to 'direct'
-                command_to_run = f"cd {shlex.quote(self.remote_cwd)} && {user_command}"
+                command_to_run = f"{cd_cmd} && {user_command}"
                 exec_via = "direct SSH"
                 logger.info(f"Executing command via {exec_via} due to execution_mode='direct': {command_to_run}")
                 timeout = 300 # 5 min timeout
 
             try:
-                output = self.active_ssh_manager.execute_command(command_to_run, timeout=timeout)
+                # Use execute_command with check_exit_code=True to raise RuntimeError on failure
+                output = self.active_ssh_manager.execute_command(command_to_run, timeout=timeout, check_exit_code=True)
                 # Print the raw output
                 if output:
                      console.print(output)
@@ -1215,15 +1374,11 @@ class DayhoffService:
                  raise TimeoutError(f"Remote command execution (via {exec_via}) timed out after {timeout} seconds: {e}") from e
             except RuntimeError as e:
                  logger.error(f"Runtime error during /hpc_run (via {exec_via}): {e}", exc_info=False)
-                 # Check for common errors
+                 # Check for common errors based on the raised RuntimeError message
                  if exec_mode == 'slurm' and "srun: error:" in str(e):
                      raise RuntimeError(f"Slurm execution failed: {e}") from e
-                 elif "No such file or directory" in str(e) and self.remote_cwd in str(e):
-                     logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid based on error. Resetting to '~'.")
-                     old_cwd = self.remote_cwd
-                     self.remote_cwd = "~" # Reset to home as a guess
-                     raise RuntimeError(f"Remote directory '{old_cwd}' likely invalid. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
-                 raise e # Re-raise other runtime errors
+                 # Let execute_command handle the display of the runtime error message
+                 raise e
             except Exception as e:
                 logger.error(f"Unexpected error executing command via {exec_via}: {e}", exc_info=True)
                 raise RuntimeError(f"Unexpected error executing remote command (via {exec_via}): {e}") from e
@@ -1259,7 +1414,8 @@ class DayhoffService:
 
             try:
                 logger.info(f"Executing command explicitly via srun using active SSH connection: {full_command}")
-                output = self.active_ssh_manager.execute_command(full_command, timeout=timeout)
+                # Use check_exit_code=True
+                output = self.active_ssh_manager.execute_command(full_command, timeout=timeout, check_exit_code=True)
                 if output:
                      console.print(output)
                 else:
@@ -1281,11 +1437,6 @@ class DayhoffService:
                  if "srun: error:" in str(e):
                      # Specific Slurm error
                      raise RuntimeError(f"Explicit Slurm execution failed: {e}") from e
-                 elif "No such file or directory" in str(e) and self.remote_cwd in str(e):
-                     logger.warning(f"Remote CWD '{self.remote_cwd}' might be invalid for explicit srun. Resetting to '~'.")
-                     old_cwd = self.remote_cwd
-                     self.remote_cwd = "~"
-                     raise RuntimeError(f"Remote directory '{old_cwd}' likely invalid for explicit srun. Resetting to '~'. Please verify and use /cd if needed. Original error: {e}") from e
                  raise e # Re-raise other runtime errors
             except Exception as e:
                 logger.error(f"Unexpected error executing explicit command via srun: {e}", exc_info=True)
@@ -1311,34 +1462,37 @@ class DayhoffService:
 
             if status['mode'] == 'connected':
                 # --- Remote LS ---
-                if not self.active_ssh_manager or not self.remote_cwd:
-                    # Should not happen if status['mode'] is 'connected', but check defensively
+                if not self.active_ssh_manager or self.remote_cwd is None:
                     raise ConnectionError("Internal state error: Connected mode but no SSH manager or remote CWD.")
 
                 # Use find command to get type and name, handle potential errors
                 # %Y = item type (f=file, d=dir, l=link), %P = name relative to starting point (.)
-                find_cmd = f"find . -mindepth 1 -maxdepth 1 -printf '%Y %P\\n'"
+                # Use -print0 for safe handling of names
+                find_cmd = f"find . -mindepth 1 -maxdepth 1 -printf '%Y\\0%P\\0'"
                 full_command = f"cd {shlex.quote(self.remote_cwd)} && {find_cmd}"
 
                 try:
                     logger.info(f"Fetching remote file list for /ls with command: {full_command}")
-                    output = self.active_ssh_manager.execute_command(full_command, timeout=30)
+                    output = self.active_ssh_manager.execute_command(full_command, timeout=30, check_exit_code=True)
 
                     if output:
-                        lines = output.strip().split('\n')
-                        for line in lines:
-                            if not line.strip(): continue
-                            try:
-                                type_char, name = line.strip().split(' ', 1)
-                                is_dir = (type_char == 'd')
-                                # Could handle 'l' for links differently if needed
-                                items.append(colorize_filename(name, is_dir=is_dir))
-                            except ValueError:
-                                logger.warning(f"Could not parse line from remote find output: '{line}'")
-                                items.append(Text(line.strip(), style="error")) # Display unparseable lines in red
+                        # Split by null character, pairs of type and name
+                        parts = output.strip('\0').split('\0')
+                        if len(parts) % 2 != 0:
+                             logger.warning(f"Unexpected output format from remote find (odd number of parts): {output}")
+                             # Attempt to process anyway or raise error? Raise for now.
+                             raise RuntimeError(f"Unexpected output format from remote find: {output}")
+
+                        for i in range(0, len(parts), 2):
+                             type_char = parts[i]
+                             name = parts[i+1]
+                             is_dir = (type_char == 'd')
+                             # Could handle 'l' for links differently if needed
+                             items.append(colorize_filename(name, is_dir=is_dir))
 
                 except (ConnectionError, TimeoutError, RuntimeError) as e:
                     # Let outer handler deal with connection/timeout issues
+                    # RuntimeError will be raised if `find` fails (e.g., permissions)
                     raise e
                 except Exception as e:
                     logger.error(f"Unexpected error during remote /ls execution: {e}", exc_info=True)
@@ -1404,18 +1558,23 @@ class DayhoffService:
                     raise ConnectionError("Internal state error: Connected mode but no SSH manager or remote CWD.")
 
                 current_dir = self.remote_cwd
-                # Command to attempt cd and then print the new working directory's absolute path
-                test_command = f"cd {shlex.quote(current_dir)} && cd {shlex.quote(target_dir_arg)} && pwd"
-                logger.info(f"Verifying remote directory change with command: {test_command}")
+                # Command to attempt cd and then print the new working directory's absolute path using pwd -P
+                # Check directory existence and type first for better error message
+                check_dir_cmd = f"cd {shlex.quote(current_dir)} && test -d {shlex.quote(target_dir_arg)}"
+                test_command = f"cd {shlex.quote(current_dir)} && cd {shlex.quote(target_dir_arg)} && pwd -P"
+                logger.info(f"Attempting remote directory change to: {target_dir_arg}")
 
                 try:
-                    new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=30)
+                    # 1. Verify it's a directory first
+                    self.active_ssh_manager.execute_command(check_dir_cmd, timeout=15, check_exit_code=True)
+
+                    # 2. If directory check passes, get the new absolute path
+                    new_dir_output = self.active_ssh_manager.execute_command(test_command, timeout=15, check_exit_code=True)
                     new_dir = new_dir_output.strip()
 
                     # Basic validation: should be a non-empty string starting with '/'
                     if not new_dir or not new_dir.startswith("/"):
-                        logger.error(f"Failed to change remote directory to '{target_dir_arg}'. 'pwd' command returned unexpected output: {new_dir_output}")
-                        # Rely on RuntimeError raised by execute_command if cd fails
+                        logger.error(f"Failed to get pwd for remote directory '{target_dir_arg}'. 'pwd -P' command returned unexpected output: {new_dir_output}")
                         raise RuntimeError(f"Failed to change remote directory to '{target_dir_arg}'. Could not verify new path.")
 
                     self.remote_cwd = new_dir
@@ -1426,10 +1585,15 @@ class DayhoffService:
                 except (ConnectionError, TimeoutError) as e:
                      raise e # Let outer handler deal with these
                 except RuntimeError as e:
-                     # Catch runtime errors from execute_command (e.g., cd failed)
+                     # Catch runtime errors from execute_command (e.g., cd failed, test -d failed, pwd failed)
                      logger.error(f"Failed to change remote directory to '{target_dir_arg}': {e}", exc_info=False)
-                     # Provide a clearer error message
-                     raise RuntimeError(f"Failed to change remote directory to '{target_dir_arg}'. Check path and permissions. Error: {e}") from e
+                     # Provide a clearer error message based on common failure points
+                     if "test -d" in str(e) or "No such file or directory" in str(e) or "Not a directory" in str(e):
+                          raise NotADirectoryError(f"Remote path is not a directory or does not exist: '{target_dir_arg}' (relative to {current_dir})") from e
+                     elif "Permission denied" in str(e):
+                          raise PermissionError(f"Permission denied accessing remote directory: '{target_dir_arg}' (relative to {current_dir})") from e
+                     else:
+                          raise RuntimeError(f"Failed to change remote directory to '{target_dir_arg}'. Error: {e}") from e
                 except Exception as e:
                     logger.error(f"Unexpected error changing remote directory to '{target_dir_arg}': {e}", exc_info=True)
                     raise RuntimeError(f"Unexpected error changing remote directory: {e}") from e
@@ -1440,31 +1604,27 @@ class DayhoffService:
                 try:
                     # Construct the target path relative to the current local CWD
                     target_path = Path(self.local_cwd) / target_dir_arg
-                    # Resolve to an absolute path (handles '..', etc.)
-                    abs_path = target_path.resolve(strict=False) # strict=False allows resolving non-existent paths initially
+                    # Use resolve(strict=True) which checks existence and resolves symlinks/..
+                    # This raises FileNotFoundError if it doesn't exist
+                    abs_path = target_path.resolve(strict=True)
 
-                    # Check if the resolved path exists and is a directory
-                    if not abs_path.exists():
-                         raise FileNotFoundError(f"Local directory not found: '{abs_path}'")
+                    # Check if the resolved path is actually a directory
                     if not abs_path.is_dir():
                          raise NotADirectoryError(f"Local path is not a directory: '{abs_path}'")
 
-                    # Check permissions (basic check, might not catch all edge cases)
-                    if not os.access(str(abs_path), os.R_OK | os.X_OK):
-                         raise PermissionError(f"Permission denied accessing local directory: '{abs_path}'")
-
-                    # Update local CWD
+                    # Update local CWD (no need for os.access check as resolve/is_dir handle permissions implicitly)
                     self.local_cwd = str(abs_path)
                     logger.info(f"Successfully changed local working directory to: {self.local_cwd}")
                     console.print(f"Local working directory changed to: {self.local_cwd}", style="info")
                     return None # Output printed
 
                 except FileNotFoundError as e:
-                     raise e # Re-raise for execute_command
+                     # Raised by resolve(strict=True) if path doesn't exist
+                     raise FileNotFoundError(f"Local directory not found: '{target_path}'") from e
                 except NotADirectoryError as e:
                      raise e # Re-raise
-                except PermissionError as e:
-                     raise e # Re-raise
+                except PermissionError as e: # Although less likely with resolve, catch defensively
+                     raise PermissionError(f"Permission denied accessing local directory: '{target_path}'") from e
                 except Exception as e:
                     logger.error(f"Unexpected error changing local directory to '{target_dir_arg}': {e}", exc_info=True)
                     raise RuntimeError(f"Unexpected error changing local directory: {e}") from e
@@ -1598,7 +1758,7 @@ class DayhoffService:
                  # Still print summary if it has info (e.g., message)
             else:
                 # Use Rich Table for better formatting
-                from rich.table import Table
+                # from rich.table import Table # Already imported at top
                 table = Table(title="Slurm Job Status", show_header=True, header_style="bold magenta")
 
                 # Define columns based on available fields in the first job (if any)
@@ -1798,3 +1958,246 @@ class DayhoffService:
             raise e # Re-raise for execute_command
         except SystemExit:
              return None # Help was printed
+
+
+    # --- File Queue Handlers ---
+
+    def _handle_queue(self, args: List[str]) -> Optional[str]:
+        """Handles the /queue command with subparsers. Prints output directly."""
+        parser = self._create_parser("queue", self._command_map['queue']['help'], add_help=True)
+        subparsers = parser.add_subparsers(dest="subcommand", title="Subcommands",
+                                           description="Valid subcommands for /queue",
+                                           help="Action to perform on the file queue")
+
+        # --- Subparser: add ---
+        parser_add = subparsers.add_parser("add", help="Add file(s) or directory(s) (recursive) to the queue.", add_help=True)
+        parser_add.add_argument("paths", nargs='+', help="One or more paths relative to the current working directory.")
+
+        # --- Subparser: show ---
+        parser_show = subparsers.add_parser("show", help="Display the files currently in the queue.", add_help=True)
+
+        # --- Subparser: remove ---
+        parser_remove = subparsers.add_parser("remove", help="Remove files from the queue by index.", add_help=True)
+        parser_remove.add_argument("indices", nargs='+', type=int, help="One or more index numbers (from /queue show).")
+
+        # --- Subparser: clear ---
+        parser_clear = subparsers.add_parser("clear", help="Remove all files from the queue.", add_help=True)
+
+        # --- Parse arguments ---
+        try:
+            # Handle case where no subcommand is given
+            if not args:
+                 parser.print_help()
+                 return None
+
+            parsed_args = parser.parse_args(args)
+
+            # --- Execute subcommand logic ---
+            if parsed_args.subcommand == "add":
+                return self._handle_queue_add(parsed_args.paths)
+            elif parsed_args.subcommand == "show":
+                return self._handle_queue_show()
+            elif parsed_args.subcommand == "remove":
+                 return self._handle_queue_remove(parsed_args.indices)
+            elif parsed_args.subcommand == "clear":
+                 return self._handle_queue_clear()
+            else:
+                 # Should not happen if subcommand is required/checked, but handle defensively
+                 parser.print_help()
+                 return None
+
+        except argparse.ArgumentError as e:
+            raise e # Re-raise for execute_command to handle
+        except SystemExit:
+             return None # Help was printed
+        # Catch specific errors from queue handlers
+        except FileNotFoundError as e: raise e
+        except NotADirectoryError as e: raise e
+        except PermissionError as e: raise e
+        except IndexError as e: raise e # From remove handler
+        except (ConnectionError, TimeoutError) as e: raise e # From remote operations
+        except Exception as e:
+            logger.error(f"Error during /queue {args}: {e}", exc_info=True)
+            raise RuntimeError(f"Error executing queue command: {e}") from e
+
+
+    def _handle_queue_add(self, paths_to_add: List[str]) -> None:
+        """Adds files/directories to the queue. Prints output."""
+        status = self.get_status()
+        added_count = 0
+        skipped_count = 0
+        error_count = 0
+        processed_dirs: Set[str] = set() # Track dirs to avoid re-processing if listed multiple times
+
+        for relative_path in paths_to_add:
+            try:
+                abs_path, cwd = self._resolve_path(relative_path)
+                path_type = self._get_path_type(abs_path)
+
+                if path_type == 'file':
+                    if abs_path not in self.file_queue:
+                        self.file_queue.append(abs_path)
+                        console.print(f"Added file: {abs_path}", style="info")
+                        added_count += 1
+                    else:
+                        console.print(f"Skipped (already in queue): {abs_path}", style="dim")
+                        skipped_count += 1
+                elif path_type == 'directory':
+                    if abs_path in processed_dirs:
+                         console.print(f"Skipped (directory already processed): {abs_path}", style="dim")
+                         skipped_count += 1 # Count skipped dirs? Or just files? Let's count as 1 skip.
+                         continue
+
+                    processed_dirs.add(abs_path)
+                    console.print(f"Scanning directory: {abs_path}...", style="info")
+                    subdir_files_added = 0
+                    subdir_files_skipped = 0
+
+                    if status['mode'] == 'connected':
+                        # Remote recursive listing
+                        found_files = self._list_remote_files_recursive(abs_path)
+                    else:
+                        # Local recursive listing
+                        found_files = []
+                        for root, _, files in os.walk(abs_path):
+                            for filename in files:
+                                try:
+                                     # Ensure correct absolute path construction
+                                     file_abs_path = str(Path(root) / filename)
+                                     # Redundant check, but safe: Check if it's actually a file
+                                     if os.path.isfile(file_abs_path):
+                                          found_files.append(file_abs_path)
+                                     else: # Should not happen with files from os.walk
+                                          logger.warning(f"os.walk listed non-file item? {file_abs_path}")
+                                except OSError as walk_err:
+                                     logger.warning(f"Error accessing file during local walk: {filename} in {root} - {walk_err}")
+                                     # Should we count this as an error? For now, just log.
+
+
+                    # Add files found inside the directory
+                    for file_path in found_files:
+                        if file_path not in self.file_queue:
+                            self.file_queue.append(file_path)
+                            subdir_files_added += 1
+                        else:
+                            subdir_files_skipped += 1
+
+                    added_count += subdir_files_added
+                    skipped_count += subdir_files_skipped
+                    console.print(f"  -> Added {subdir_files_added} files from directory {abs_path} ({subdir_files_skipped} skipped).", style="info")
+
+            except FileNotFoundError as e:
+                 logger.warning(f"Could not add path '{relative_path}': {e}")
+                 console.print(f"[warning]Skipped (not found):[/warning] '{relative_path}' (in {status['cwd']})")
+                 error_count += 1
+            except NotADirectoryError as e: # Should be caught by _get_path_type more specifically
+                 logger.warning(f"Path is not a file or directory '{relative_path}': {e}")
+                 console.print(f"[warning]Skipped (not a file/directory):[/warning] '{relative_path}'")
+                 error_count += 1
+            except PermissionError as e:
+                 logger.warning(f"Permission denied for path '{relative_path}': {e}")
+                 console.print(f"[error]Skipped (permission denied):[/error] '{relative_path}'")
+                 error_count += 1
+            except (ConnectionError, TimeoutError, RuntimeError) as e:
+                 logger.error(f"Error processing path '{relative_path}': {e}")
+                 console.print(f"[error]Error processing '{relative_path}': {e}[/error]")
+                 error_count += 1
+                 # Stop processing further paths if connection seems lost? Maybe not, try others.
+            except Exception as e:
+                 logger.error(f"Unexpected error processing path '{relative_path}': {e}", exc_info=True)
+                 console.print(f"[error]Unexpected error processing '{relative_path}': {e}[/error]")
+                 error_count += 1
+
+        console.print(f"\nQueue add summary: Added {added_count}, Skipped {skipped_count}, Errors {error_count}. Total in queue: {len(self.file_queue)}", style="bold")
+        return None # Output printed
+
+    def _handle_queue_show(self) -> None:
+        """Displays the current file queue. Prints output."""
+        if not self.file_queue:
+            console.print("File queue is empty.", style="info")
+            return None
+
+        table = Table(title=f"File Queue ({len(self.file_queue)} items)", show_header=True, header_style="bold magenta")
+        table.add_column("Index", style="dim", width=6, justify="right")
+        table.add_column("Absolute Path")
+
+        # Use colorize_filename for the path display
+        for i, file_path in enumerate(self.file_queue):
+             # Simple coloring based on file extension from the absolute path
+             # We don't know if it's local or remote here, assume file
+             colored_name = colorize_filename(os.path.basename(file_path))
+             # Display the full path but color the basename
+             dir_name = os.path.dirname(file_path)
+             display_path = Text.assemble(dir_name + os.path.sep, colored_name)
+             table.add_row(str(i + 1), display_path) # 1-based index for user
+
+        console.print(table)
+        return None # Output printed
+
+    def _handle_queue_remove(self, indices_to_remove: List[int]) -> None:
+        """Removes files from the queue by 1-based index. Prints output."""
+        if not self.file_queue:
+            console.print("File queue is already empty.", style="warning")
+            return None
+
+        current_queue_size = len(self.file_queue)
+        # Convert 1-based input indices to 0-based list indices
+        # Validate indices immediately
+        valid_zero_based_indices: Set[int] = set()
+        invalid_inputs: List[str] = []
+
+        for index_arg in indices_to_remove:
+            if 1 <= index_arg <= current_queue_size:
+                valid_zero_based_indices.add(index_arg - 1)
+            else:
+                invalid_inputs.append(str(index_arg))
+
+        if invalid_inputs:
+            console.print(f"[error]Invalid index numbers provided:[/error] {', '.join(invalid_inputs)}. Use indices from 1 to {current_queue_size}.", style="error")
+            # Optionally, proceed with valid indices or stop? Let's proceed.
+            # raise ValueError(f"Invalid index numbers provided: {', '.join(invalid_inputs)}. Use indices from 1 to {current_queue_size}.")
+
+
+        if not valid_zero_based_indices:
+             if not invalid_inputs: # No valid indices and no invalid inputs probably means no indices given? Argparse handles.
+                  console.print("No valid indices provided to remove.", style="warning")
+             return None # Nothing to remove
+
+        # Remove items by index, working from highest index downwards to avoid shifting issues
+        removed_count = 0
+        removed_items_display = []
+        sorted_indices = sorted(list(valid_zero_based_indices), reverse=True)
+
+        for index in sorted_indices:
+            try:
+                removed_item = self.file_queue.pop(index)
+                removed_items_display.append(os.path.basename(removed_item)) # Show basename for brevity
+                removed_count += 1
+                logger.debug(f"Removed item at index {index+1}: {removed_item}")
+            except IndexError:
+                 # Should not happen due to validation, but handle defensively
+                 logger.error(f"Internal error: IndexError removing previously validated index {index}")
+                 console.print(f"[error]Internal error removing index {index+1}. Queue may be inconsistent.[/error]", style="error")
+
+        if removed_count > 0:
+             console.print(f"Removed {removed_count} item(s): {', '.join(removed_items_display)}.", style="info")
+             console.print(f"Queue now contains {len(self.file_queue)} item(s).", style="info")
+        elif invalid_inputs: # Only invalid inputs were given
+             console.print("No items removed due to invalid indices.", style="warning")
+        # else: # No valid or invalid indices provided scenario (should be handled earlier)
+
+        return None # Output printed
+
+
+    def _handle_queue_clear(self) -> None:
+        """Clears the entire file queue. Prints output."""
+        queue_size_before = len(self.file_queue)
+        if queue_size_before == 0:
+             console.print("File queue is already empty.", style="info")
+        else:
+             self.file_queue.clear()
+             logger.info(f"Cleared {queue_size_before} items from the file queue.")
+             console.print(f"Cleared {queue_size_before} items from the file queue.", style="info")
+        return None # Output printed
+
+
