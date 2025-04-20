@@ -57,9 +57,15 @@ class WorkflowVisualizer:
                 return {'success': False, 'error': error_msg}
 
             if dot:
-                dot.render(outfile=str(output_path), view=False, cleanup=True) # Saves the .gv file
-                logger.info(f"Successfully generated DOT file: {output_path}")
-                return {'success': True, 'path': str(output_path)}
+                # Ensure output directory exists
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                # Use format='gv' to explicitly save as DOT source
+                # The render method saves a file named output_path.gv
+                dot.render(outfile=str(output_path), format='gv', view=False, cleanup=True)
+                # The actual saved file has .gv extension, let's return that path
+                dot_file_path = output_path.with_suffix('.gv')
+                logger.info(f"Successfully generated DOT file: {dot_file_path}")
+                return {'success': True, 'path': str(dot_file_path)}
             else:
                 # This case might occur if parsing succeeded but graph generation failed internally
                 error_msg = f"Graph generation failed for language '{language}' for unknown reasons."
@@ -73,10 +79,14 @@ class WorkflowVisualizer:
             logger.error(f"Error generating DOT file for {language}: {e}", exc_info=True)
             return {'success': False, 'error': f"Error generating DOT graph: {e}"}
 
-    def _generate_cwl_dot(self, code: str) -> Optional[graphviz.Digraph]:
+    # Use string literal for type hint to avoid runtime error if graphviz is None
+    def _generate_cwl_dot(self, code: str) -> Optional['graphviz.Digraph']:
         """Generates a graphviz.Digraph object for a CWL workflow."""
         if not RUAMEL_AVAILABLE:
             raise ImportError("Cannot parse CWL for visualization: ruamel.yaml not installed.")
+        if not graphviz: # Should be caught by __init__, but double-check
+             raise ImportError("Graphviz library not available.")
+
 
         yaml = YAML(typ='safe')
         try:
@@ -186,6 +196,6 @@ class WorkflowVisualizer:
         return str(cwl_type)
 
     # Placeholder for other language parsers
-    # def _generate_nextflow_dot(self, code: str) -> Optional[graphviz.Digraph]:
+    # def _generate_nextflow_dot(self, code: str) -> Optional['graphviz.Digraph']:
     #     logger.warning("Nextflow visualization is not yet implemented.")
     #     return None
