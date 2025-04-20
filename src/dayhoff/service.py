@@ -10,6 +10,7 @@ import shlex # For shell quoting
 import io # For capturing rich output
 import time # For LLM test timeout
 from pathlib import Path # For local path operations
+import datetime # For workflow timestamps
 
 # --- Rich for coloring ---
 from rich.console import Console
@@ -20,6 +21,7 @@ from rich.panel import Panel
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table # Added for queue show
+from rich.markdown import Markdown
 
 # --- Core Components ---
 # Import the GLOBAL config instance and renamed ALLOWED_WORKFLOW_LANGUAGES
@@ -42,6 +44,8 @@ from .hpc_bridge.ssh_manager import SSHManager
 try:
     # Attempt to import real clients if they exist and are installed
     from .llm.client import LLMClient, OpenAIClient, AnthropicClient
+    from .llm.prompt import PromptManager
+    from .workflows.llm_generator import LLMWorkflowGenerator
     LLM_CLIENTS_AVAILABLE = True
 except ImportError:
     LLM_CLIENTS_AVAILABLE = False
@@ -57,6 +61,16 @@ except ImportError:
          def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, default_model: Optional[str] = None): ...
     class AnthropicClient(LLMClient):
          def __init__(self, api_key: Optional[str] = None, default_model: Optional[str] = None, base_url: Optional[str] = None): ...
+    
+    # Placeholder for PromptManager
+    class PromptManager:
+        def generate_prompt(self, template_name: str, context: Dict[str, Any]) -> str: ...
+    
+    # Placeholder for LLMWorkflowGenerator
+    class LLMWorkflowGenerator:
+        def generate_workflow(self, description: str, max_attempts: int = 3) -> Dict[str, Any]: ...
+        def list_workflows(self) -> List[Dict[str, Any]]: ...
+    
     # Log warning only once during initialization
     logging.getLogger(__name__).warning("LLM client libraries not found or import failed. LLM features will be unavailable.")
 
@@ -143,6 +157,8 @@ class DayhoffService:
         self.remote_cwd: Optional[str] = None
         self.local_cwd: str = os.getcwd() # Track local CWD
         self.llm_client: Optional[LLMClient] = None # Initialize LLM client as None
+        self.prompt_manager: Optional[PromptManager] = None # Initialize prompt manager as None
+        self.workflow_generator: Optional[LLMWorkflowGenerator] = None # Initialize workflow generator as None
         self.file_queue: List[str] = [] # Initialize the file queue
         logger.info(f"DayhoffService initialized. Local CWD: {self.local_cwd}")
         self._command_map = self._build_command_map()
@@ -258,6 +274,18 @@ class DayhoffService:
                       remove <idx...> : Remove files from the queue by their index number (from /queue show).
                       clear         : Remove all files from the queue.""")
             },
+            "workflow": {
+                "handler": self._handle_workflow,
+                "help": textwrap.dedent("""\
+                    Manage LLM-generated workflows.
+                    Usage: /workflow [subcommand] [arguments]
+                    Subcommands:
+                      list          : List all saved workflows.
+                      show <index>  : Show details of a specific workflow.
+                      generate <description> : Generate a new workflow using LLM.
+                    
+                    Note: You can also generate workflows by typing a description without a leading '/'.""")
+            },
         }
 
     def get_available_commands(self) -> List[str]:
@@ -289,6 +317,15 @@ class DayhoffService:
 
     def execute_command(self, command: str, args: List[str]) -> Any:
         """Execute a command"""
+        # Check if this is a non-command input (no leading /)
+        if not command.startswith('/'):
+            # Treat as workflow generation request
+            return self._handle_workflow_generation(command + ' ' + ' '.join(args))
+            
+        # Strip leading / if present
+        if command.startswith('/'):
+            command = command[1:]
+            
         logger.info(f"Executing command: /{command} with args: {args}")
         if command in self._command_map:
             command_info = self._command_map[command]
@@ -2203,4 +2240,234 @@ class DayhoffService:
              logger.info(f"Cleared {queue_size_before} items from the file queue.")
              console.print(f"Cleared {queue_size_before} items from the file queue.", style="info")
         return None # Output printed
+        
+    def _get_prompt_manager(self) -> PromptManager:
+        """Get or initialize the prompt manager"""
+        if self.prompt_manager is None:
+            self.prompt_manager = PromptManager()
+        return self.prompt_manager
+        
+    def _get_workflow_generator(self) -> LLMWorkflowGenerator:
+        """Get or initialize the workflow generator"""
+        if self.workflow_generator is None:
+            llm_client = self._get_llm_client()
+            prompt_manager = self._get_prompt_manager()
+            self.workflow_generator = LLMWorkflowGenerator(llm_client, prompt_manager)
+        return self.workflow_generator
+    
+    def _handle_workflow(self, args: List[str]) -> Optional[str]:
+        """Handles the /workflow command with subparsers. Prints output directly."""
+        parser = self._create_parser("workflow", self._command_map['workflow']['help'], add_help=True)
+        subparsers = parser.add_subparsers(dest="subcommand", title="Subcommands",
+                                           description="Valid subcommands for /workflow",
+                                           help="Action to perform with workflows")
+        
+        # --- Subparser: list ---
+        parser_list = subparsers.add_parser("list", help="List all saved workflows.", add_help=True)
+        
+        # --- Subparser: show ---
+        parser_show = subparsers.add_parser("show", help="Show details of a specific workflow.", add_help=True)
+        parser_show.add_argument("index", type=int, help="Index of the workflow to show (from list).")
+        
+        # --- Subparser: generate ---
+        parser_generate = subparsers.add_parser("generate", help="Generate a new workflow using LLM.", add_help=True)
+        parser_generate.add_argument("description", nargs='+', help="Description of the workflow to generate.")
+        
+        try:
+            # Handle case where no subcommand is given - default to list
+            if not args:
+                return self._handle_workflow_list()
+                
+            parsed_args = parser.parse_args(args)
+            
+            # --- Execute subcommand logic ---
+            if parsed_args.subcommand == "list":
+                return self._handle_workflow_list()
+            elif parsed_args.subcommand == "show":
+                return self._handle_workflow_show(parsed_args.index)
+            elif parsed_args.subcommand == "generate":
+                description = " ".join(parsed_args.description)
+                return self._handle_workflow_generation(description)
+            else:
+                # Should not happen if subcommand is required/checked, but handle defensively
+                parser.print_help()
+                return None
+                
+        except argparse.ArgumentError as e:
+            raise e # Re-raise for execute_command to handle
+        except SystemExit:
+            return None # Help was printed
+        except Exception as e:
+            logger.error(f"Error during /workflow {args}: {e}", exc_info=True)
+            raise RuntimeError(f"Error executing workflow command: {e}") from e
+    
+    def _handle_workflow_list(self) -> None:
+        """Lists all saved workflows. Prints output."""
+        try:
+            workflow_generator = self._get_workflow_generator()
+            workflows = workflow_generator.list_workflows()
+            
+            if not workflows:
+                console.print("No workflows have been generated yet.", style="info")
+                return None
+                
+            table = Table(title=f"Generated Workflows ({len(workflows)} total)", show_header=True, header_style="bold magenta")
+            table.add_column("#", style="dim", width=4, justify="right")
+            table.add_column("Name", style="bold")
+            table.add_column("Language", width=10)
+            table.add_column("Created", width=20)
+            table.add_column("Summary")
+            
+            for i, workflow in enumerate(workflows):
+                # Format the date for display
+                created_at = workflow.get('created_at', '')
+                try:
+                    dt = datetime.datetime.fromisoformat(created_at)
+                    created_display = dt.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    created_display = created_at
+                    
+                table.add_row(
+                    str(i + 1),  # 1-based index
+                    workflow.get('name', 'Untitled'),
+                    workflow.get('language', 'unknown').upper(),
+                    created_display,
+                    workflow.get('summary', 'No summary available')
+                )
+                
+            console.print(table)
+            console.print("\nUse '/workflow show <#>' to view details of a specific workflow.", style="dim")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error listing workflows: {e}", exc_info=True)
+            raise RuntimeError(f"Error listing workflows: {e}") from e
+    
+    def _handle_workflow_show(self, index: int) -> None:
+        """Shows details of a specific workflow. Prints output."""
+        try:
+            workflow_generator = self._get_workflow_generator()
+            workflows = workflow_generator.list_workflows()
+            
+            if not workflows:
+                console.print("No workflows have been generated yet.", style="info")
+                return None
+                
+            # Convert from 1-based (user) to 0-based (internal) index
+            idx = index - 1
+            if idx < 0 or idx >= len(workflows):
+                raise IndexError(f"Workflow index {index} is out of range. Valid range: 1-{len(workflows)}")
+                
+            workflow = workflows[idx]
+            
+            # Format created date
+            created_at = workflow.get('created_at', '')
+            try:
+                dt = datetime.datetime.fromisoformat(created_at)
+                created_display = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                created_display = created_at
+            
+            # Display workflow details
+            details = [
+                f"[bold]Name:[/bold] {workflow.get('name', 'Untitled')}",
+                f"[bold]Language:[/bold] {workflow.get('language', 'unknown').upper()}",
+                f"[bold]Created:[/bold] {created_display}",
+                f"[bold]File:[/bold] {workflow.get('file', 'Unknown')}",
+                "",
+                f"[bold]Summary:[/bold] {workflow.get('summary', 'No summary available')}",
+                "",
+                f"[bold]Original Description:[/bold] {workflow.get('description', 'No description available')}"
+            ]
+            
+            console.print(Panel("\n".join(details), title=f"Workflow #{index} Details", border_style="cyan"))
+            
+            # Try to read and display the workflow file
+            file_path = workflow.get('file')
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        workflow_code = f.read()
+                    
+                    language = workflow.get('language', 'unknown')
+                    console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code", border_style="green"))
+                except Exception as e:
+                    console.print(f"[error]Error reading workflow file:[/error] {e}")
+            else:
+                console.print("[warning]Workflow file not found or path not specified.[/warning]")
+                
+            return None
+            
+        except IndexError as e:
+            raise e  # Re-raise for execute_command to handle
+        except Exception as e:
+            logger.error(f"Error showing workflow: {e}", exc_info=True)
+            raise RuntimeError(f"Error showing workflow: {e}") from e
+    
+    def _handle_workflow_generation(self, description: str) -> None:
+        """Generates a workflow using LLM based on description. Prints output."""
+        if not LLM_CLIENTS_AVAILABLE:
+            console.print("[error]LLM client libraries not installed or found. Cannot generate workflow.[/error]")
+            console.print("Please ensure necessary packages like 'openai' or 'anthropic' are installed.")
+            return None
+            
+        try:
+            # Check if LLM is configured
+            llm_config = self.config.get_llm_config()
+            if not llm_config.get('api_key'):
+                console.print("[error]LLM API Key is not configured. Cannot generate workflow.[/error]")
+                console.print("Use '/config set LLM api_key <your_key>' to configure.")
+                return None
+                
+            if not llm_config.get('model'):
+                console.print("[error]LLM Model is not configured. Cannot generate workflow.[/error]")
+                console.print("Use '/config set LLM model <model_name>' to configure.")
+                return None
+                
+            # Get current workflow language
+            language = self.config.get_workflow_language()
+            console.print(f"Generating {language.upper()} workflow based on your description...", style="info")
+            
+            # Show spinner during generation
+            with Live(Spinner("dots", text="Generating workflow with LLM..."), console=console, transient=True, refresh_per_second=10) as live:
+                workflow_generator = self._get_workflow_generator()
+                result = workflow_generator.generate_workflow(description)
+                
+            if not result.get('success', False):
+                error_msg = result.get('error', 'Unknown error')
+                console.print(f"[error]Failed to generate workflow:[/error] {error_msg}")
+                return None
+                
+            workflow = result.get('workflow', {})
+            
+            # Display success message and workflow details
+            console.print(f"[bold green]✅ Workflow generated successfully![/bold green]")
+            
+            details = [
+                f"[bold]Name:[/bold] {workflow.get('name', 'Untitled')}",
+                f"[bold]Language:[/bold] {workflow.get('language', 'unknown').upper()}",
+                f"[bold]Saved to:[/bold] {workflow.get('file', 'Unknown')}",
+                "",
+                f"[bold]Summary:[/bold] {workflow.get('summary', 'No summary available')}"
+            ]
+            
+            console.print(Panel("\n".join(details), title="Generated Workflow", border_style="green"))
+            
+            # Try to read and display the workflow file
+            file_path = workflow.get('file')
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        workflow_code = f.read()
+                    
+                    console.print(Panel(workflow_code, title=f"{language.upper()} Workflow Code", border_style="cyan"))
+                except Exception as e:
+                    console.print(f"[error]Error reading generated workflow file:[/error] {e}")
+            
+            console.print("\nUse '/workflow list' to see all generated workflows.", style="dim")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error generating workflow: {e}", exc_info=True)
+            raise RuntimeError(f"Error generating workflow: {e}") from e
 
