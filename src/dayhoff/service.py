@@ -316,16 +316,13 @@ class DayhoffService:
             }
 
     def execute_command(self, command: str, args: List[str]) -> Any:
-        """Execute a command"""
-        # Check if this is a command (starts with /)
-        if command.startswith('/'):
-            # Strip leading / for command processing
-            command = command[1:]
-        else:
-            # Non-command input - treat as workflow generation request
-            return self._handle_workflow_generation(command + ' ' + ' '.join(args))
-            
-        logger.info(f"Executing command: /{command} with args: {args}")
+        """
+        Execute a registered command or treat input as a workflow generation request.
+        The 'command' argument should be the command name *without* the leading '/'.
+        """
+        logger.info(f"Executing command: {command} with args: {args}")
+
+        # Check if the command name exists in our map
         if command in self._command_map:
             command_info = self._command_map[command]
             handler = command_info["handler"]
@@ -383,9 +380,18 @@ class DayhoffService:
                 console.print(f"[error]Unexpected Error:[/error] {type(e).__name__}: {e}")
                 return None
         else:
-            logger.warning(f"Unknown command attempted: /{command}")
-            console.print(f"[error]Unknown command:[/error] /{command}. Type /help for available commands.")
-            return None
+            # If command is NOT in the map, treat the original input as a workflow generation request
+            logger.info(f"Command '{command}' not found in command map, treating as workflow generation request.")
+            # Reconstruct the original input string
+            full_input = command + (' ' + ' '.join(args) if args else '')
+            try:
+                return self._handle_workflow_generation(full_input)
+            except Exception as e:
+                # Catch errors during workflow generation attempt
+                logger.error(f"Error attempting workflow generation for input '{full_input}': {e}", exc_info=True)
+                console.print(f"[error]Unknown command:[/error] /{command}. Attempted workflow generation failed: {e}")
+                return None
+
 
     # --- Help Handler ---
     def _handle_help(self, args: List[str]) -> Optional[str]:
@@ -428,7 +434,7 @@ class DayhoffService:
                 "HPC Execution": ["hpc_run"],
                 "Slurm": ["hpc_slurm_run", "hpc_slurm_submit", "hpc_slurm_status"],
                 "Credentials": ["hpc_cred_get"],
-                "Workflow": ["wf_gen"],
+                "Workflow": ["wf_gen", "workflow"], # Added workflow command group
             }
             displayed_cmds = set()
             for group, cmds in cmd_groups.items():
@@ -1130,7 +1136,7 @@ class DayhoffService:
             raise ConnectionError("Cannot list remote files: Not connected.")
 
         # Use find to list only files (-type f) and print their paths (%p) relative to the start dir
-        # Use -print0 and split('\0') for safer handling of filenames with whitespace/newlines
+        # Use -print0 for safer handling of filenames with whitespace/newlines
         command = f"find {shlex.quote(abs_dir_path)} -type f -print0"
         try:
             output = self.active_ssh_manager.execute_command(command, timeout=120) # Longer timeout for deep dirs
