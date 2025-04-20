@@ -7,6 +7,15 @@ import datetime
 import subprocess # Added for potential external validation
 import re # Added for cleaning response
 
+# Attempt to import ruamel.yaml for CWL parsing
+try:
+    from ruamel.yaml import YAML
+    RUAMEL_AVAILABLE = True
+except ImportError:
+    YAML = None # type: ignore
+    RUAMEL_AVAILABLE = False
+
+
 from ..config import config
 from ..llm.prompt import PromptManager
 from ..llm.client import LLMClient
@@ -49,6 +58,18 @@ class WorkflowValidator:
             return False, "Missing cwlVersion field"
         if 'class:' not in workflow_code and '"class":' not in workflow_code:
             return False, "Missing class field (e.g., Workflow, CommandLineTool)"
+
+        # Attempt YAML parsing if available
+        if RUAMEL_AVAILABLE:
+            yaml = YAML(typ='safe') # Use safe loader
+            try:
+                yaml.load(workflow_code)
+            except Exception as e:
+                 return False, f"YAML parsing failed: {e}"
+        else:
+             logger.warning("ruamel.yaml not installed. Skipping YAML validation for CWL.")
+
+
         # TODO: Use cwltool --validate via subprocess
         # Example (requires cwltool installed and careful path/error handling):
         # try:
@@ -166,8 +187,9 @@ class LLMWorkflowGenerator:
         language = config.get_workflow_language()
         validator = WorkflowValidator(language)
         workflow_code = ""
-        workflow_name = "Untitled Workflow"
-        workflow_summary = "No summary provided"
+        # Initialize with defaults that might be overwritten by LLM response
+        workflow_name = f"Workflow_{language}_{datetime.datetime.now().strftime('%Y%m%d%H%M')}"
+        workflow_summary = "No summary available"
         last_error = "Failed to get initial response from LLM"
         last_raw_response = "" # Store the raw response from the last failed attempt
 
@@ -221,24 +243,28 @@ class LLMWorkflowGenerator:
                 # Parse the JSON response from the LLM
                 try:
                     parsed_llm_json = json.loads(cleaned_response_text)
+                    if not isinstance(parsed_llm_json, dict):
+                         raise json.JSONDecodeError("Response is not a JSON object", cleaned_response_text, 0)
                 except json.JSONDecodeError as json_err:
                     json_parse_error = True # Mark that JSON parsing failed
-                    last_error = f"LLM response was not valid JSON after cleaning: {json_err}\nCleaned text:\n{cleaned_response_text}"
+                    last_error = f"LLM response was not valid JSON object after cleaning: {json_err}\nCleaned text:\n{cleaned_response_text}"
                     logger.warning(last_error)
                     # Do NOT reset workflow_code here if it was valid before
                     continue # Try again
 
                 # --- JSON Parsing Succeeded ---
                 # Extract data based on the prompt used
-                if attempt == 1 or json_parse_error: # If first attempt or correcting a JSON error, expect full structure
+                # Always try to get name and summary, even on correction attempts, in case LLM provides them
+                workflow_name = parsed_llm_json.get('workflow_name', workflow_name) # Keep previous if not provided
+                workflow_summary = parsed_llm_json.get('workflow_summary', workflow_summary) # Keep previous if not provided
+
+                if attempt == 1 or json_parse_error: # If first attempt or correcting a JSON error, expect 'workflow_code'
                     workflow_code = parsed_llm_json.get('workflow_code', '')
-                    workflow_name = parsed_llm_json.get('workflow_name', f"Workflow_{language}_{datetime.datetime.now().strftime('%Y%m%d%H%M')}")
-                    workflow_summary = parsed_llm_json.get('workflow_summary', 'No summary available')
-                else: # Correction attempt for validation error
+                else: # Correction attempt for validation error, expect 'corrected_workflow'
                     workflow_code = parsed_llm_json.get('corrected_workflow', workflow_code) # Use corrected or fallback to previous
                     explanation = parsed_llm_json.get('explanation', '(No explanation provided)')
                     logger.info(f"LLM correction explanation: {explanation}")
-                    # Keep previous name and summary during correction
+
 
                 if not workflow_code:
                     last_error = "LLM response JSON did not contain workflow code ('workflow_code' or 'corrected_workflow')."
@@ -311,6 +337,247 @@ class LLMWorkflowGenerator:
         # Reload index in case it was modified externally? Or assume it's managed solely here.
         # self._load_workflows_index() # Optional reload
         return self.workflows_index
+
+    def delete_workflow(self, index: int) -> Dict[str, Any]:
+        """
+        Delete a workflow by its 1-based index.
+
+        Args:
+            index: 1-based index of the workflow to delete.
+
+        Returns:
+            Dictionary with 'success': bool and 'name': str or 'error': str.
+        """
+        idx = index - 1 # Convert to 0-based index
+        if idx < 0 or idx >= len(self.workflows_index):
+            return {'success': False, 'error': f"Workflow index {index} is out of range. Valid range: 1-{len(self.workflows_index)}"}
+
+        workflow_entry = self.workflows_index[idx]
+        file_path_str = workflow_entry.get('file')
+        workflow_name = workflow_entry.get('name', 'Unknown')
+
+        # 1. Remove from index
+        try:
+            del self.workflows_index[idx]
+            self._save_workflows_index()
+            logger.info(f"Removed workflow #{index} ('{workflow_name}') from index.")
+        except Exception as e:
+            logger.error(f"Failed to remove workflow #{index} from index or save index: {e}", exc_info=True)
+            # Attempt to restore index entry? Risky. For now, report error.
+            # If saving failed, the entry might still be gone in memory. Reload?
+            self._load_workflows_index() # Reload to be safe
+            return {'success': False, 'error': f"Failed to update workflow index file: {e}"}
+
+        # 2. Delete the file (best effort)
+        if file_path_str:
+            file_path = Path(file_path_str)
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                    logger.info(f"Deleted workflow file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Removed workflow #{index} from index, but failed to delete file {file_path}: {e}")
+                    # Return success=True because index was updated, but maybe add a warning?
+                    return {'success': True, 'name': workflow_name, 'warning': f"Failed to delete file {file_path}: {e}"}
+            else:
+                logger.warning(f"Workflow file path for index #{index} not found: {file_path_str}")
+        else:
+            logger.warning(f"No file path found for workflow index #{index}. Cannot delete file.")
+
+        return {'success': True, 'name': workflow_name}
+
+    def get_workflow_inputs(self, index: int) -> Dict[str, Any]:
+        """
+        Get the defined inputs for a workflow by its 1-based index.
+
+        Args:
+            index: 1-based index of the workflow.
+
+        Returns:
+            Dictionary with 'success': bool, 'inputs': list, 'name': str, 'language': str or 'error': str.
+        """
+        idx = index - 1 # Convert to 0-based index
+        if idx < 0 or idx >= len(self.workflows_index):
+            return {'success': False, 'error': f"Workflow index {index} is out of range. Valid range: 1-{len(self.workflows_index)}"}
+
+        workflow_entry = self.workflows_index[idx]
+        file_path_str = workflow_entry.get('file')
+        workflow_name = workflow_entry.get('name', 'Unknown')
+        language = workflow_entry.get('language', 'unknown').lower()
+
+        if not file_path_str:
+            return {'success': False, 'error': f"No file path found for workflow index #{index}."}
+
+        file_path = Path(file_path_str)
+        if not file_path.exists():
+            return {'success': False, 'error': f"Workflow file not found at {file_path_str}"}
+
+        try:
+            with open(file_path, 'r') as f:
+                workflow_code = f.read()
+        except Exception as e:
+            return {'success': False, 'error': f"Failed to read workflow file {file_path}: {e}"}
+
+        # --- Parse Inputs Based on Language ---
+        inputs = []
+        parse_error = None
+        try:
+            if language == 'cwl':
+                inputs = self._parse_cwl_inputs(workflow_code)
+            elif language == 'nextflow':
+                inputs = self._parse_nextflow_inputs(workflow_code)
+            elif language == 'wdl':
+                inputs = self._parse_wdl_inputs(workflow_code)
+            elif language == 'snakemake':
+                inputs = self._parse_snakemake_inputs(workflow_code)
+            else:
+                parse_error = f"Input parsing not implemented for language: {language}"
+                logger.warning(parse_error)
+
+        except Exception as e:
+            parse_error = f"Parsing failed for {language} workflow: {e}"
+            logger.error(f"Error parsing inputs for workflow {file_path}: {e}", exc_info=True)
+
+        if parse_error:
+             # Return success=False if parsing failed critically, or maybe success=True with empty inputs and a warning?
+             # Let's return failure for now.
+             return {'success': False, 'error': parse_error, 'name': workflow_name, 'language': language}
+
+        return {'success': True, 'inputs': inputs, 'name': workflow_name, 'language': language}
+
+
+    # --- Input Parsing Helper Methods ---
+
+    def _parse_cwl_inputs(self, code: str) -> List[Dict[str, str]]:
+        """Basic parsing of CWL inputs using ruamel.yaml if available."""
+        inputs = []
+        if not RUAMEL_AVAILABLE:
+            logger.warning("Cannot parse CWL inputs: ruamel.yaml not installed.")
+            raise NotImplementedError("Cannot parse CWL inputs: ruamel.yaml not installed.")
+
+        yaml = YAML(typ='safe') # Use safe loader
+        try:
+            data = yaml.load(code)
+            if isinstance(data, dict) and 'inputs' in data:
+                cwl_inputs = data['inputs']
+                if isinstance(cwl_inputs, dict):
+                    for name, details in cwl_inputs.items():
+                        input_info = {'name': name}
+                        if isinstance(details, dict):
+                            input_info['type'] = str(details.get('type', 'unknown'))
+                            input_info['description'] = details.get('doc', details.get('label', ''))
+                        elif isinstance(details, str): # Simple type definition
+                            input_info['type'] = details
+                            input_info['description'] = ''
+                        else:
+                             input_info['type'] = 'unknown'
+                             input_info['description'] = ''
+                        inputs.append(input_info)
+                elif isinstance(cwl_inputs, list): # Array notation (less common for top level)
+                     logger.warning("Parsing CWL inputs array notation is not fully supported.")
+                     # Handle basic array case if needed
+        except Exception as e:
+            raise ValueError(f"Failed to parse CWL YAML: {e}") from e
+        return inputs
+
+    def _parse_nextflow_inputs(self, code: str) -> List[Dict[str, str]]:
+        """Basic parsing of Nextflow params using regex."""
+        inputs = []
+        # Regex to find `params.<name> = <value>` assignments, capturing name and optionally default value
+        # This is very basic and won't capture complex defaults or params defined differently.
+        # It also doesn't capture type information easily.
+        pattern = re.compile(r"params\.(\w+)\s*=\s*(.+?)(?:\s*//|\s*$)")
+        for match in pattern.finditer(code):
+            name = match.group(1)
+            default_val = match.group(2).strip().strip('\'"') # Basic cleaning of default value
+            inputs.append({
+                'name': name,
+                'type': 'param', # Cannot easily determine type
+                'description': f"Default: {default_val}"
+            })
+        if not inputs:
+             logger.warning("Basic Nextflow parser found no 'params.<name> = ...' declarations.")
+        return inputs
+
+    def _parse_wdl_inputs(self, code: str) -> List[Dict[str, str]]:
+        """Basic parsing of WDL workflow inputs using regex."""
+        inputs = []
+        # Find the 'workflow {...}' block first
+        workflow_match = re.search(r"workflow\s+\w+\s*\{", code, re.DOTALL)
+        if not workflow_match:
+            # Maybe it's just tasks? Look for task inputs. This is ambiguous.
+            # Let's focus on the main workflow block for now.
+            logger.warning("Basic WDL parser could not find 'workflow {...}' block.")
+            return inputs # Or raise error?
+
+        # Find the 'input {...}' block within the workflow block
+        # This requires finding matching braces, which regex struggles with.
+        # Use a simpler regex for now, looking for declarations within the workflow block
+        # Pattern: `Type name = default` or `Type name` within the workflow scope (approximate)
+        # This is highly approximate and likely to fail on complex WDL.
+        pattern = re.compile(r"^\s*(\w+(?:\[\w+\])?\??)\s+(\w+)\s*(?:=\s*(.+))?$", re.MULTILINE)
+
+        # Limit search roughly to the workflow block (very approximate brace matching)
+        start_pos = workflow_match.end()
+        # Find potential end brace (very naive)
+        end_pos_match = re.search(r"\}", code[start_pos:], re.MULTILINE)
+        end_pos = end_pos_match.start() + start_pos if end_pos_match else len(code)
+
+        for match in pattern.finditer(code, pos=start_pos, endpos=end_pos):
+             # Check if it's likely within an 'input {}' block (heuristic)
+             # Find the last occurrence of 'input {' before the match
+             input_block_start = code.rfind('input {', 0, match.start())
+             if input_block_start != -1:
+                 # Find the closing brace for that input block (naive)
+                 input_block_end = code.find('}', input_block_start)
+                 if input_block_end != -1 and match.start() < input_block_end:
+                     # Likely inside an input block
+                     wdl_type = match.group(1)
+                     name = match.group(2)
+                     default_val = match.group(3)
+                     inputs.append({
+                         'name': name,
+                         'type': wdl_type,
+                         'description': f"Default: {default_val.strip()}" if default_val else "(No default)"
+                     })
+
+        if not inputs:
+             logger.warning("Basic WDL parser found no input declarations like 'Type name' within workflow block.")
+        return inputs
+
+
+    def _parse_snakemake_inputs(self, code: str) -> List[Dict[str, str]]:
+        """Basic parsing of Snakemake config access using regex."""
+        inputs = []
+        # Look for `config["<name>"]` or `config['<name>']`
+        pattern = re.compile(r"""config\[\s*['"]([^'"]+)['"]\s*\]""")
+        found_keys = set()
+        for match in pattern.finditer(code):
+            key = match.group(1)
+            if key not in found_keys:
+                inputs.append({
+                    'name': key,
+                    'type': 'config',
+                    'description': 'Accessed via config dictionary'
+                })
+                found_keys.add(key)
+
+        # Look for `workflow.config["<name>"]` etc.
+        pattern_wf = re.compile(r"""workflow\.config\[\s*['"]([^'"]+)['"]\s*\]""")
+        for match in pattern_wf.finditer(code):
+             key = match.group(1)
+             if key not in found_keys:
+                 inputs.append({
+                     'name': key,
+                     'type': 'config',
+                     'description': 'Accessed via workflow.config dictionary'
+                 })
+                 found_keys.add(key)
+
+        if not inputs:
+             logger.warning("Basic Snakemake parser found no config['key'] access patterns.")
+        return inputs
+
 
     def _get_file_extension(self, language: str) -> str:
         """Get the appropriate file extension for the workflow language"""
